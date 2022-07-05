@@ -1,0 +1,11 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+data/.DS_Store
+data/catch.csv
+data/haul.csv
+data/racebase_stratum_data.csv
+data/CPUE.csv
+data/BIOMASS_STRATUM.csv
+data/Extrapolation_Grids/GOAThorsonGrid_Less700m.csv
