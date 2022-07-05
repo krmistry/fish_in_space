@@ -73,10 +73,16 @@ CPUE_data <- read.csv(here("data/CPUE.csv"))
 
 #### Spatial & Spatio-temporal VAST settings
 
-# Creating list of temporal setting and the distribution settings for VAST input with custom function (see 01_functions.R)
-temporal_dist_settings <- dist_beta_setting_fun(dist_setting, 
-                                                beta_setting,
-                                                epsilon_setting)
+# Creating list of temporal setting and the distribution settings for VAST input for each species
+# with custom function (see 01_functions.R)
+temporal_dist_settings <- list()
+for(stock in stock_folder_names) {
+  temporal_dist_settings[[stock]] <- dist_beta_setting_fun(dist_setting, 
+                                                         beta_setting,
+                                                         epsilon_setting,
+                                                         stock)
+}
+
 
 ## Spatial & spatiotemp random effects settings - ***I think these stay the same...
 FieldConfig <- matrix( c("IID","IID",
@@ -90,7 +96,8 @@ FieldConfig <- matrix( c("IID","IID",
 #beta = number of factors for intercepts (relevant for multivariate models - factor analysis for years)
 
 
-# Creating input data files for VAST, filtered by species and species-specific start years (custom function described in function.R script)
+# Creating input data files for VAST, filtered by species and species-specific start years 
+# (custom function described in 01_function.R script)
 Data_Geostat_list <- list()
 for (stock in 1:N_stock) {
   Data_Geostat_list[[stock]] <- filter_create_VAST_input(CPUE_data, 
@@ -119,20 +126,24 @@ for(stock in 1:N_stock) {
 names(survey_years) <- stock_folder_names
 
 
-# VAST settings object
-settings = make_settings(Version = "VAST_v12_0_0", #.cpp version, not software #e.g., "VAST_v12_0_0"
-                         n_x = 500, #knots aka spatial resolution of our estimates
-                         Region = "User", #Region = "gulf_of_alaska" , go to ?make_settings for other built in extrapolation grids
-                         purpose = "index2", #changes default settings
-                         ObsModel= temporal_dist_settings$obsmodel,
-                         ## everything after this is default if you use purpose = "index2"##
-                         FieldConfig = FieldConfig, #spatial & spatiotemp random effects 
-                         RhoConfig = temporal_dist_settings$RhoConfig, #temporal settings; default is all 0s, but if I specify this it will be changed here
-                         strata.limits = strata.limits, #define area that you're producing index for
-                         "knot_method" = "grid", #knots in proportion to spatial domain #other option is knot_method="samples"
-                         fine_scale = TRUE, #changes the type of interpolation in your extrapolation area
-                         bias.correct = TRUE, #corrects the index for nonlinear transformation; I want this for the final version, but I can turn it off while I'm messing with the model so it will run faster
-                         use_anisotropy = TRUE) ##correlations decline depend on direction if this argument is TRUE
+# VAST settings objects for each species
+settings <- list()
+for(stock in stock_folder_names) {
+  settings[[stock]] <- make_settings(Version = "VAST_v12_0_0", #.cpp version, not software #e.g., "VAST_v12_0_0"
+                           n_x = 500, #knots aka spatial resolution of our estimates
+                           Region = "User", #Region = "gulf_of_alaska" , go to ?make_settings for other built in extrapolation grids
+                           purpose = "index2", #changes default settings
+                           ObsModel= temporal_dist_settings[[stock]]$obsmodel,
+                           ## everything after this is default if you use purpose = "index2"##
+                           FieldConfig = FieldConfig, #spatial & spatiotemp random effects 
+                           RhoConfig = temporal_dist_settings[[stock]]$RhoConfig, #temporal settings; default is all 0s, but if I specify this it will be changed here
+                           strata.limits = strata.limits, #define area that you're producing index for
+                           "knot_method" = "grid", #knots in proportion to spatial domain #other option is knot_method="samples"
+                           fine_scale = TRUE, #changes the type of interpolation in your extrapolation area
+                           bias.correct = TRUE, #corrects the index for nonlinear transformation; I want this for the final version, but I can turn it off while I'm messing with the model so it will run faster
+                           use_anisotropy = TRUE) ##correlations decline depend on direction if this argument is TRUE
+  
+}
 
 ## Import extrapolation grid from data folder:
 GOAgrid <- read.csv(file = here("data/Extrapolation_Grids", "GOAThorsonGrid_Less700m.csv"))
@@ -144,27 +155,4 @@ input_grid <- cbind(Lat = GOAgrid$Lat,
 gc() 
 
 
-
-# ### Formatting settings to show in thesis draft
-# make_settings(Version = "VAST_v12_0_0",
-#               n_x = 500, 
-#               Region = "User", 
-#               purpose = "index2", 
-#               ObsModel= c(2, 1),
-#               FieldConfig = matrix( c("IID","IID",
-#                                       "IID","IID",
-#                                       "IID","IID"), 
-#                                     ncol=2, nrow=3, 
-#                                     dimnames=list(c("Omega","Epsilon","Beta"), 
-#                                                   c("Component_1","Component_2"))), 
-#               RhoConfig = c("Beta1" = 2, "Beta2" = 2, 
-#                             "Epsilon1" = 2, "Epsilon2" = 2), 
-#               strata.limits = data.frame(STRATA = as.factor(c("Western", "Central", "Eastern")),
-#                                          west_border = c(-Inf, -159, -147),
-#                                          east_border = c(-159, -147, Inf)),
-#               "knot_method" = "grid", 
-#               fine_scale = TRUE, 
-#               bias.correct = TRUE, 
-#               use_anisotropy = TRUE) 
-# 
 
