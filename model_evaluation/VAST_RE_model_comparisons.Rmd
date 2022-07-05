@@ -1,0 +1,1949 @@
+---
+title: "VAST & RE model comparisons"
+author: "Kelly Mistry"
+date: "7/16/2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r survey data setup, include=FALSE, eval=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(here)
+library(dplyr)
+library(tidyr)
+library(R.utils)
+library(ggplot2)
+library(RColorBrewer)
+library(reshape2)
+library(scales)
+library(ggdist)
+
+# Importing functions from VAST and RE model projects
+source("/Users/kellymistry/Desktop/Raw Data/NOAA/RE_model_v2/scripts/functions.R")
+source("/Users/kellymistry/Desktop/Raw Data/NOAA/groundfish_VAST/scripts/functions.R")
+
+# species 
+stock_names <- c("Pacific Ocean Perch" = "Sebastes alutus", 
+                 "Northern Rockfish" = "Sebastes polyspinis") 
+              #   "Atka Mackerel" = "Pleurogrammus monopterygius")
+my_stock_ids <- c("30060", 
+                  "30420") 
+                  #"21921")
+names(my_stock_ids) <- stock_names
+stock_folder_names <- sub(" ", "_", stock_names)
+
+# Species-specific start and end years
+start_years <- c(1990, 
+                 1984) 
+                # 1984)
+names(start_years) = stock_names
+end_years <- c(2019,
+               2019)
+               # 2019)
+names(end_years) = stock_names
+
+# subregions
+subregion <- c("WESTERN", "CENTRAL", "EASTERN")
+
+# Number of stocks and subregions
+N_stock <- length(stock_names)
+N_sub <- length(subregion)
+
+## Import original data sets
+# Data set with summarized estimates for each subregion in each year (used with RE model)
+GOA_indices_data <- read.csv("/Users/kellymistry/Desktop/Raw Data/NOAA/RE_model_v2/data/BIOMASS_AREA_DATA_TABLE.csv")
+# Raw data (used in VAST model), with all of the hauls in each year
+GOA_haul_data <- read.csv("/Users/kellymistry/Desktop/Raw Data/NOAA/groundfish_VAST/data/haul.csv")
+GOA_CPUE_data <- read.csv("/Users/kellymistry/Desktop/Raw Data/NOAA/groundfish_VAST/data/CPUE.csv")
+# Filtering raw data by species and years
+GOA_raw_data_list <- list()
+for (stock in 1:N_stock) {
+  GOA_raw_data_list[[stock]] <- filter_create_VAST_input(GOA_CPUE_data, 
+                                           my_stock_ids, 
+                                           stock_names[stock],
+                                           start_years[stock],
+                                           GOA_haul_data)
+  # Checking for NAs in the AreaSwept_km2 column (variable necessary for
+  # calculating CPUE, so NA values will cause code to fail)
+  if(sum(is.na(GOA_raw_data_list[[stock]][, "AreaSwept_km2"])) > 0) {
+    deleted_rows <- which(is.na(GOA_raw_data_list[[stock]][, "AreaSwept_km2"]) == TRUE)
+    if (length(deleted_rows) < 10 && length(deleted_rows) > 0) {
+      GOA_raw_data_list[[stock]] <- GOA_raw_data_list[[stock]][-c(deleted_rows),]
+    } else if (length(deleted_rows) > 10) {
+      stop("More than 10 NAs in AreaSwept_km2 column in Data_Geostat") #it might be important to look at why there might be a lot of NAs before deciding to get rid of the rows
+    }
+  }
+  # Adding a column with the subregion for each haul location
+  for (i in 1:nrow(GOA_raw_data_list[[stock]])) {
+   if (GOA_raw_data_list[[stock]]$Lon[i] <= -157) {
+     GOA_raw_data_list[[stock]]$Subregion[i] <-  subregion[1] 
+  } else if (GOA_raw_data_list[[stock]]$Lon[i] > -157 && GOA_raw_data_list[[stock]]$Lon[i] <= -147) {
+    GOA_raw_data_list[[stock]]$Subregion[i] <-  subregion[2] 
+  } else {
+      GOA_raw_data_list[[stock]]$Subregion[i] <- subregion[3]
+    }
+  }
+}
+names(GOA_raw_data_list) <- sub(" ", "_", stock_names)
+
+
+# Creating list of data frames for each subregion for each species (6 total)
+separated_stock_data <- list()
+
+for (stock in 1:N_stock) {
+  separated_stock_data[[stock]] <- lapply(subregion, function(sub) {
+    initial_set_up_fun(GOA_indices_data, 
+                       stock_names[stock], 
+                       start_years[stock], 
+                       sub)
+  })
+  names(separated_stock_data[[stock]]) <- subregion
+}
+names(separated_stock_data) <- stock_folder_names
+
+# Recording survey years for each species
+survey_years <- list()
+for(stock in 1:N_stock) {
+  survey_years[[stock]] <- lapply(subregion, function(sub) {
+      separated_stock_data[[stock]][[sub]]$YEAR
+  })
+  names(survey_years[[stock]]) <- subregion
+}
+
+names(survey_years) <- stock_folder_names
+
+# Import VAST results (only using gamma results, since only 1 Tweedie version ran successfully)
+beta_list <- c("beta_2_1","beta_2s", "beta_4s")
+beta_num <- beta_list[1]
+
+# Importing the Table_for_SS3.csv VAST output, which has the bias-corrected results, and is the model results that should be used in the below calculations
+
+# Create list to hold species VAST results dataframes
+VAST_results_all <- list()
+
+for (stock in 1:N_stock) { 
+  Table_SS3_data <- read.csv(paste0("/Users/kellymistry/Desktop/Raw Data/NOAA/groundfish_VAST/results/", stock_folder_names[stock], "/Gamma/", beta_num, "/just_survey/Plots/Table_for_SS3.csv")) 
+  # Change the automatic column name for subregions
+  colnames(Table_SS3_data)[3] <- "Subregion"
+  # Change automatic numeric values to subregion names
+  for(sub in 1:N_sub) {
+    Table_SS3_data$Subregion[Table_SS3_data$Subregion == sub] <- subregion[sub]
+  }
+  # Setting specific order of subregion factor levels (for plotting)
+  Table_SS3_data$Subregion <- factor(Table_SS3_data$Subregion, levels = subregion)
+  # Deleting rows with NAs (non-survey years)
+  Table_SS3_data <- na.omit(Table_SS3_data)
+  
+  # Saving results dataframe to list
+  VAST_results_all[[stock]] <- Table_SS3_data
+}
+names(VAST_results_all) <- stock_folder_names
+
+
+# Import RE results with all data
+# Set results folders dataframe up:
+RE_results_all <- list()
+for (stock in 1:N_stock) {
+    sub_results <- lapply(subregion, function(x) {
+      # Import raw rwout.rep file
+        rwout_path <- paste0("/Users/kellymistry/Desktop/Raw Data/NOAA/RE_model_v2/results/", x, "/", stock_folder_names[stock], "/rwout.rep")
+        # Transform it into a dataframe with custom function (see functions.R for details)
+        format_RE_output_fun(rwout_path, stock_names[stock])
+      })
+  names(sub_results) <- subregion
+  RE_results_all[[stock]] <- sub_results
+  # Reformat above to melt subregion data into a single dataframe for each species in order to plot in the same way as the VAST data
+  id_variables <- colnames(RE_results_all[[stock]][[1]])
+  RE_results_all[[stock]] <- melt(RE_results_all[[stock]], id.vars = id_variables)
+  colnames(RE_results_all[[stock]])[9] <- "Subregion"
+}
+names(RE_results_all) <- stock_folder_names
+
+# Creating list of folders to store the names of the RE resampled folders
+RE_resampled_results_folders_old <- list()
+for (stock in 1:N_stock) {
+  stock_folders <- list()
+  for (sub in 1:N_sub) {
+    species_years <- survey_years[[stock]]
+      stock_folders[[sub]] <- lapply(species_years[[sub]], function(x) {
+        paste0("/Users/kellymistry/Desktop/Raw Data/NOAA/RE_model_v2/results/Resampling_results/", stock_folder_names[stock], "/", subregion[sub], "/", x)
+      })
+      stock_folders[[sub]] <- unlist(stock_folders[[sub]])
+  }
+  RE_resampled_results_folders_old[[stock]] <- stock_folders
+  names(RE_resampled_results_folders_old[[stock]]) <- subregion
+}
+names(RE_resampled_results_folders_old) <- stock_folder_names
+
+# Import resampled RE results
+RE_results_resampled_old <- list()
+for (stock in 1:N_stock) {
+  sub_list <- list()
+for (sub in 1:N_sub) {
+  year_list <- list()
+  years <- survey_years[[stock]][[sub]]
+  for(year in 1:length(years)) {
+    rwout_path <- paste0(RE_resampled_results_folders_old[[stock]][[subregion[sub]]][year], "/rwout.rep")
+    # Transform it into a dataframe with custom function (see functions.R for details)
+    year_list[[year]] <- format_RE_output_fun(rwout_path, stock_names[stock])
+    year_list[[year]]$Subregion <- subregion[sub]
+  }
+  names(year_list) <- paste0("X", years)
+  sub_list[[sub]] <- year_list
+}
+names(sub_list) <- subregion
+RE_results_resampled_old[[stock]] <- sub_list
+}
+names(RE_results_resampled_old) <- stock_folder_names
+
+# Creating list of folders to store the names of the VAST resampled folders
+VAST_resampled_results_folders <- list()
+for (stock in 1:N_stock) {
+  species_years <- survey_years[[stock]][[1]]
+  VAST_resampled_results_folders[[stock]] <- lapply(species_years, function(x) {
+        paste0("/Users/kellymistry/Desktop/Raw Data/NOAA/groundfish_VAST/results/Resampled_results/", stock_folder_names[stock], "/Gamma/", beta_num, "/", x)
+      })
+  VAST_resampled_results_folders[[stock]] <- unlist(VAST_resampled_results_folders[[stock]])
+}
+names(VAST_resampled_results_folders) <- stock_folder_names
+
+# Import resampled VAST results
+VAST_results_resampled <- list()
+for (stock in 1:N_stock) {
+  years <- survey_years[[stock]][[1]]
+  year_list <- list()
+  for (year in 1:length(years)) {
+    Table_SS3_data <- read.csv(paste0("/Users/kellymistry/Desktop/Raw Data/NOAA/groundfish_VAST/results/Resampled_results/", stock_folder_names[stock], "/Gamma/", beta_num, "/", years[year], "/Plots/Table_for_SS3.csv")) 
+  # Change the automatic column name for subregions
+  colnames(Table_SS3_data)[3] <- "Subregion"
+  # Change automatic numeric values to subregion names
+  for(sub in 1:N_sub) {
+    Table_SS3_data$Subregion[Table_SS3_data$Subregion == sub] <- subregion[sub]
+  }
+  # Setting specific order of subregion factor levels (for plotting)
+  Table_SS3_data$Subregion <- factor(Table_SS3_data$Subregion, levels = subregion)
+  # Deleting rows with NAs (non-survey years)
+  Table_SS3_data <- na.omit(Table_SS3_data)
+  
+  # Saving results dataframe to list
+  year_list[[year]] <- Table_SS3_data
+  }
+  VAST_results_resampled[[stock]] <- year_list
+  names(VAST_results_resampled[[stock]]) <- paste0("X", survey_years[[stock]][[1]])
+}
+names(VAST_results_resampled) <- stock_folder_names
+
+# Custom colors for plots
+subregion_colors <- brewer.pal(3, "Dark2")
+names(subregion_colors) <- subregion
+  
+model_colors <- c(subregion_colors[c(1:2)], "black")
+names(model_colors) <- c("RW", "VAST","survey")
+
+```
+
+```{r RE result plots}
+RE_results <- RE_results_all
+
+for(stock in 1:N_stock) {
+  RE_results[[stock]] <- RE_results[[stock]][RE_results[[stock]]$yrs %in% survey_years[[stock]][[1]],]
+
+  # RE estimated 2001 values for eastern subregion, but the survey didn't happen there (for either species), so I have to add in an NA to that position in the survey data before adding it into the results dataframe in order to plot it
+  X2001_ind <- which(sort(unique(RE_results[[stock]]$yrs)) == 2001)
+  updated_eastern_data <-  c(separated_stock_data[[stock]]$EASTERN$AREA_BIOMASS[1:X2001_ind-1], NA, separated_stock_data[[stock]]$EASTERN$AREA_BIOMASS[X2001_ind:nrow(separated_stock_data[[stock]]$EASTERN)])
+  
+  # Pulling survey data into the same dataframe as the results data
+  RE_results[[stock]]$survey_data <- c(separated_stock_data[[stock]]$WESTERN$AREA_BIOMASS, separated_stock_data[[stock]]$CENTRAL$AREA_BIOMASS, updated_eastern_data)
+}
+
+
+# Setting custom colors
+myColors <- model_colors[c(1,3)]
+names(myColors) <- c("RW results", "Survey data")
+
+for(stock in 1:N_stock) {
+  # Number of years for confidence interval calculation
+  N_years <- length(unique(RE_results[[stock]]$Year))
+  # Plot VAST results, faceted by subregion
+  plot <- ggplot(RE_results[[stock]]) +
+    geom_point(aes(x = yrs, y = as.numeric(biomA), color = "RW results")) +
+    geom_errorbar(aes(x = yrs, y = as.numeric(biomA), ymin = as.numeric(LCI), ymax = as.numeric(UCI), color = "RW results")) +
+  geom_point(aes(x = yrs, y = survey_data, color = "Survey data")) +
+  facet_wrap(~Subregion, scales = "free") +
+  labs(title = stock_names[stock], x = "Years",
+         y = "Biomass Estimate (mt)") +
+  scale_color_manual(name="", values = myColors) +
+  theme(legend.position="bottom")
+
+ggsave(filename = paste0(stock_folder_names[stock], "_RE_results.png"), plot = plot, path = here::here("Plots"))
+}
+
+#For POP in western subregion (presentation graph)
+N_years <- length(unique(RE_results[[1]]$Year))
+  # Plot VAST results, faceted by subregion
+plot <- ggplot(RE_results[[1]][RE_results[[1]]$Subregion == subregion[1],]) +
+    geom_point(aes(x = yrs, y = as.numeric(biomA), color = "RW results")) +
+    geom_errorbar(aes(x = yrs, y = as.numeric(biomA), ymin = as.numeric(LCI), ymax = as.numeric(UCI), color = "RW results")) +
+  geom_point(aes(x = yrs, y = survey_data, color = "Survey data")) +
+  labs(title = paste0(stock_names[stock], " - ", subregion[1]), x = "Years",
+         y = "Biomass Estimate (mt)") +
+  scale_color_manual(name="", values = myColors) +
+  theme_bw() +
+  theme(legend.position="bottom")
+  
+
+ggsave(filename = paste0(stock_folder_names[1], "-", subregion[1], "_RE_results.png"), plot = plot, path = here::here("Plots"))
+
+```
+
+
+```{r VAST result plots}
+VAST_results <- VAST_results_all
+for (stock in 1:N_stock) {
+  # VAST estimated 2001 values for eastern subregion, but the survey didn't happen there (for either species), so I have to add in an NA to that position in the survey data before adding it into the results dataframe in order to plot it
+  X2001_ind <- which(sort(unique(VAST_results[[stock]]$Year)) == 2001)
+  updated_eastern_data <-  c(separated_stock_data[[stock]]$EASTERN$AREA_BIOMASS[1:X2001_ind-1], NA, separated_stock_data[[stock]]$EASTERN$AREA_BIOMASS[X2001_ind:nrow(separated_stock_data[[stock]]$EASTERN)])
+  
+  # Pulling survey data into the same dataframe as the results data
+  VAST_results[[stock]]$survey_data <- c(separated_stock_data[[stock]]$WESTERN$AREA_BIOMASS, separated_stock_data[[stock]]$CENTRAL$AREA_BIOMASS, updated_eastern_data)
+}
+
+# Setting custom colors
+myColors <- model_colors[c(2:3)]
+names(myColors) <- c("delta-GLMM results", "Survey data")
+
+for(stock in 1:N_stock) {
+  # Number of years for confidence interval calculation
+  N_years <- length(unique(VAST_results[[stock]]$Year))
+  # Plot VAST results, faceted by subregion
+  plot <- ggplot(VAST_results[[stock]]) +
+    geom_point(aes(x = Year, y = Estimate_metric_tons, color = "delta-GLMM results")) +
+    geom_errorbar(aes(x = Year, ymin = Estimate_metric_tons-1.96*(SD_mt/sqrt(N_years)), 
+                      ymax = Estimate_metric_tons+1.96*(SD_mt/sqrt(N_years)), color = "delta-GLMM results")) +
+  geom_point(aes(x = Year, y = survey_data, color = "Survey data")) +
+  facet_wrap(~Subregion, scales = "free") +
+  labs(title = stock_names[stock], x = "Years",
+         y = "Biomass Estimate (mt)") +
+  scale_color_manual(name="", values = myColors) +
+  theme(legend.position="bottom")
+
+ggsave(filename = paste0(stock_folder_names[stock], "_VAST_results.png"), plot = plot, path = here::here("Plots"))
+}
+
+## Plotting POP in western subregion for presentation
+N_years <- length(unique(VAST_results[[1]]$Year))
+VAST_results_west <- filter(VAST_results[[1]], Subregion == subregion[1])
+myColors <- model_colors[c(2:3)]
+names(myColors) <- c("delta-GLMM results", "Survey data")
+
+plot <- ggplot(VAST_results_west) +
+    geom_point(aes(x = Year, y = Estimate_metric_tons, color = "delta-GLMM results")) +
+    geom_errorbar(aes(x = Year, ymin = Estimate_metric_tons-1.96*(SD_mt/sqrt(N_years)), 
+                      ymax = Estimate_metric_tons+1.96*(SD_mt/sqrt(N_years)), color = "delta-GLMM results")) +
+  geom_point(aes(x = Year, y = survey_data, color = "Survey data")) +
+  labs(title = paste0(stock_names[1], " - ", subregion[1]), x = "Years",
+         y = "Biomass Estimate (mt)") +
+  scale_color_manual(name = "", values = myColors) +
+  theme_bw() +
+  theme(legend.position="bottom")
+  
+
+ggsave(filename = paste0(stock_folder_names[1], "-", subregion[1], "_VAST_results.png"), plot = plot, path = here::here("Plots"))
+
+# Manually entering results from VAST printed in 2020 stock assessment; its for the whole region, not separated into subregions
+VAST_2020_results <- as.data.frame(matrix(NA, nrow = 16, ncol = 6))
+colnames(VAST_2020_results) <- c("Year", "Predicted", "Observed", "SE", "LCI_95", "UCI_95")
+VAST_2020_results$Year <- c(1984, 1987, 1990, 1993, 1996, 1999, 2001, 2003, 2005, 2007, 2009, 2011, 2013, 2015, 2017, 2019)
+VAST_2020_results$Predicted <- c(63.08, 82.99, 99.58, 108.86, 112.09, 111.96, 108.72, 108.66, 108.59, 108.72, 107.13, 102.07, 93.54, 83.36, 74.49, 68.18)
+VAST_2020_results$Observed <- c(42.31, 122.81, 99.84, 92.62, 152.93, 128.71, 369.04, 85.05, 239.96, 179.91, 78.83, 109.96, 264.92, 100.59, 140.41, 99.92)
+VAST_2020_results$SE <- c(6.04, 19.88, 14.65, 12.35, 26.05, 29.79, 90.33, 12.25, 29.61, 27.90, 11.31, 15.96, 46.73, 18.74, 23.34, 14.67)
+VAST_2020_results$LCI_95 <- c(30.48, 83.84, 71.12, 68.41, 101.88, 70.32, 192.00, 61.04, 181.91, 125.23, 56.67, 78.69, 173.32, 63.85, 94.68, 71.17)
+VAST_2020_results$UCI_95 <- c(54.14, 161.77, 128.56, 116.83, 203.98, 187.10, 546.07, 109.06, 298.00, 234.60, 100.99, 141.23, 356.51, 137.33, 186.15, 128.66)
+
+myColors <- rev(brewer.pal(3, "Dark2")[c(2,3)])
+names(myColors) <- c("VAST results", "Survey data")
+
+plot <- ggplot(VAST_2020_results) +
+    geom_point(aes(x = Year, y = Observed, color = "VAST results")) +
+    geom_errorbar(aes(x = Year, ymin = LCI_95, 
+                      ymax = UCI_95, color = "VAST results")) +
+  geom_point(aes(x = Year, y = Predicted, color = "Survey data")) +
+  labs(title = paste0(stock_names[2], " - all GOA"), x = "Years",
+         y = "Biomass Estimate (mt)") +
+  scale_color_manual(name = "", values = myColors) +
+  theme_bw() +
+  theme(legend.position="bottom")
+# The above doesn't make sense - it looks like the observed and predicted data was transposed in the table. I switched the columns in my plot, but its weird.
+
+# If I was right to switch these, it looks like the VAST model sometimes over predicts the biomass, although its not as wildly off as my preliminary results
+
+#### Resampled result plots - just for POP (NR runs aren't working yet)
+year_colors <- c(colorRampPalette(brewer.pal(8, "Set2"))(length(survey_years[[1]][[1]])), "black")
+names(year_colors) <- c(survey_years[[1]][[1]], "All")
+
+
+plot <- ggplot() +
+  geom_line(data = VAST_results_all$Sebastes_alutus, aes(x = Year, y = Estimate_metric_tons, color = "All"), size = 1.5) +
+  geom_line(data = VAST_results_resampled$Sebastes_alutus$X1990, aes(x = Year, y = Estimate_metric_tons, color = "1990")) +
+  geom_line(data = VAST_results_resampled$Sebastes_alutus$X1993, aes(x = Year, y = Estimate_metric_tons, color = "1993")) +
+  geom_line(data = VAST_results_resampled$Sebastes_alutus$X1996, aes(x = Year, y = Estimate_metric_tons, color = "1996")) +
+  geom_line(data = VAST_results_resampled$Sebastes_alutus$X1999, aes(x = Year, y = Estimate_metric_tons, color = "1999")) +
+  geom_line(data = VAST_results_resampled$Sebastes_alutus$X2001, aes(x = Year, y = Estimate_metric_tons, color = "2001")) +
+  geom_line(data = VAST_results_resampled$Sebastes_alutus$X2003, aes(x = Year, y = Estimate_metric_tons, color = "2003")) +
+  geom_line(data = VAST_results_resampled$Sebastes_alutus$X2005, aes(x = Year, y = Estimate_metric_tons, color = "2005")) +
+  geom_line(data = VAST_results_resampled$Sebastes_alutus$X2007, aes(x = Year, y = Estimate_metric_tons, color = "2007")) +
+    geom_line(data = VAST_results_resampled$Sebastes_alutus$X2009, aes(x = Year, y = Estimate_metric_tons, color = "2009")) +
+  geom_line(data = VAST_results_resampled$Sebastes_alutus$X2011, aes(x = Year, y = Estimate_metric_tons, color = "2011")) +
+  geom_line(data = VAST_results_resampled$Sebastes_alutus$X2013, aes(x = Year, y = Estimate_metric_tons, color = "2013")) +
+  geom_line(data = VAST_results_resampled$Sebastes_alutus$X2015, aes(x = Year, y = Estimate_metric_tons, color = "2015")) +
+  geom_line(data = VAST_results_resampled$Sebastes_alutus$X2017, aes(x = Year, y = Estimate_metric_tons, color = "2017")) +
+  geom_line(data = VAST_results_resampled$Sebastes_alutus$X2019, aes(x = Year, y = Estimate_metric_tons, color = "2019")) +
+  facet_grid(vars(Subregion), scales = "free") +
+  scale_color_manual(name = "Missing year", values = year_colors) +
+  theme_bw() +
+  labs(title = paste0(stock_names[1], " - resampled results"), x = "Years",
+         y = "Biomass Estimate (mt)") 
+  
+
+ggsave(filename = paste0(stock_folder_names[2], "-", "_VAST_resampled_results.png"), plot = plot, path = here::here("Plots"))
+  
+
+```
+
+## Visual Comparison of VAST & random effects model predicted biomass results
+
+```{r visual comparison, eval=FALSE}
+# Plotting the VAST vs RE predicted biomass with survey data as reference
+
+# Combining VAST results, RE results and survey data into single dataframe for each species
+all_results <- list()
+for (stock in 1:N_stock) {
+  # Separating out just the survey years in the RE results
+  RE_results_all[[stock]]$yrs <- as.numeric(RE_results_all[[stock]]$yrs)
+  partial_RE_results <- filter(RE_results_all[[stock]], yrs %in% survey_years[[stock]][[1]])
+  
+  all_results[[stock]] <- cbind(partial_RE_results[, -c(1, 9)], VAST_results_all[[stock]])
+  # VAST estimated 2001 values for eastern subregion, but the survey didn't happen there (for either species), so I have to add in an NA to that position in the survey data before adding it into the results dataframe in order to plot it
+  X2001_ind <- which(survey_years[[stock]][[1]] == 2001)
+  updated_eastern_data <-  c(separated_stock_data[[stock]]$EASTERN$AREA_BIOMASS[1:X2001_ind-1], NA, separated_stock_data[[stock]]$EASTERN$AREA_BIOMASS[X2001_ind:nrow(separated_stock_data[[stock]]$EASTERN)])
+  
+  # Pulling survey data into the same dataframe as the results data
+  all_results[[stock]]$survey_data <- c(separated_stock_data[[stock]]$WESTERN$AREA_BIOMASS, separated_stock_data[[stock]]$CENTRAL$AREA_BIOMASS, updated_eastern_data)
+}
+names(all_results) <- stock_folder_names
+
+# vars <- c("delta-GLMM results"="black", "Survey data"="blue", "RE results" = "red")
+# If I decide to do custom colors (I may not):
+vars <- brewer.pal(3, "Set2")
+names(vars) <- c("delta-GLMM results", "Survey data", "RE results")
+    
+for(stock in 1:N_stock) {
+  # Number of years for confidence interval calculation
+  N_years <- length(unique(VAST_results_all[[stock]]$Year))
+  
+  plot <- ggplot(all_results[[stock]]) +
+  geom_pointrange(aes(x = Year, y = Estimate_metric_tons, 
+                      ymin = Estimate_metric_tons-1.96*(SD_mt/sqrt(N_years)), 
+                      ymax = Estimate_metric_tons+1.96*(SD_mt/sqrt(N_years)), 
+                      color = "delta-GLMM results")) +
+  geom_pointrange(aes(x = Year+.2, y = as.numeric(biomA), 
+                      ymin = as.numeric(LCI), 
+                      ymax = as.numeric(UCI), 
+                      color = "RE results")) +
+  geom_point(aes(x = Year-0.2, y = survey_data, color = "Survey data")) +
+  facet_wrap(~Subregion, scales = "free") +
+  labs(title = stock_names[stock], x = "Years",
+         y = "Biomass Estimate (mt)") +
+  scale_color_manual(name="", values=vars) +
+  theme(legend.position="bottom")
+
+ggsave(filename = paste0(stock_folder_names[stock], "_all_results.png"), plot = plot, path = here::here("Plots"))
+}
+
+#Above plot for just POP in western region for presentation slide:
+N_years <- length(unique(VAST_results_all[[1]]$Year))
+vars <- model_colors
+names(vars) <- c("RW results", "delta-GLMM results", "Survey data")
+
+plot <- ggplot(all_results[[1]][all_results[[1]]$Subregion == subregion[1],]) +
+  geom_point(aes(x = Year, y = Estimate_metric_tons, color = "delta-GLMM results")) +
+  geom_errorbar(aes(x = Year, y = Estimate_metric_tons, 
+                      ymin = Estimate_metric_tons-1.96*(SD_mt/sqrt(N_years)), 
+                      ymax = Estimate_metric_tons+1.96*(SD_mt/sqrt(N_years)), 
+                      color = "delta-GLMM results")) +
+  geom_point(aes(x = Year, y = as.numeric(biomA), color = "RW results")) +
+  geom_errorbar(aes(x = Year, y = as.numeric(biomA), 
+                      ymin = as.numeric(LCI), 
+                      ymax = as.numeric(UCI), 
+                      color = "RW results")) +
+  geom_point(aes(x = Year, y = survey_data, color = "Survey data")) +
+  labs(title = paste0(stock_names[1], " - ", subregion[1]), x = "Years",
+         y = "Biomass Estimate (mt)") +
+  scale_color_manual(name="", values=vars) +
+  theme(legend.position="bottom") +
+  theme_bw()
+
+ggsave(filename = paste0(stock_folder_names[1], "-", subregion[1], "_all_results.png"), plot = plot, path = here::here("Plots"))
+
+```
+
+## First step: Conversion of raw estimates to proportion of area (POA)
+
+Since apportionment for the subregions is calculated as a proportion of the TAC for the whole region, the biomass estimates are transformed into proportion of area. In the below equation, $z_{t,s}$ = proportion of area at time t in subregion s, S = number of subregions (3), and $x_{t,s}$ = estimated biomass at time step t, subregion s
+
+$$
+z_{n,s} = \frac{x_{n,s}} {\sum_{s = 1}^S x_{n, s}}
+$$
+
+
+```{r POA}
+
+POA_fun_old <- function(western_biomass, central_biomass, eastern_biomass) {
+  n <- length(western_biomass)
+  POA <- as.data.frame(matrix(NA, nrow = n, ncol = 3))
+  colnames(POA) <- c("WESTERN_POA", "CENTRAL_POA", "EASTERN_POA")
+                     # "WESTERN_POA_se", "CENTRAL_POA_se", "EASTERN_POA_se")
+  
+  for(i in 1:n) {
+    denominator <- sum(western_biomass[i], central_biomass[i], eastern_biomass[i])
+    POA[i, 1] <- western_biomass[i]/denominator
+    POA[i, 2] <- central_biomass[i]/denominator
+    POA[i, 3] <- eastern_biomass[i]/denominator
+    # POA[i, 4] <- sqrt(POA[i, 1]*n*(1 - POA[i, 1]))/n
+    # POA[i, 5] <- sqrt(POA[i, 2]*n*(1 - POA[i, 2]))/n
+    # POA[i, 6] <- sqrt(POA[i, 3]*n*(1 - POA[i, 3]))/n
+  }
+  return(POA = POA)
+}
+
+# Converting all data RE results to proportion of area
+RE_POA <- list()
+for(stock in 1:N_stock) {
+  RE_POA[[stock]] <- POA_fun(RE_results_all[[stock]]$biomA[RE_results_all[[stock]]$Subregion == subregion[1]],
+        RE_results_all[[stock]]$biomA[RE_results_all[[stock]]$Subregion == subregion[2]],
+        RE_results_all[[stock]]$biomA[RE_results_all[[stock]]$Subregion == subregion[3]])
+  RE_POA[[stock]]$Year <- sort(unique(RE_results_all[[stock]]$yrs))
+}
+names(RE_POA) <- stock_folder_names
+
+
+# Excluding the X2001 datasets from western and central (because there is no eastern survey from that year, so POA can't be calculated)
+for(stock in 1:N_stock) {
+  for(sub in 1:2) {
+    RE_results_resampled_old[[stock]][[sub]] <- RE_results_resampled_old[[stock]][[sub]][names(RE_results_resampled_old[[stock]][[sub]]) != "X2001"]
+  }
+}
+
+# Calculate POA for RE resampled results
+RE_POA_resampled_old <- list()
+for (stock in 1:N_stock) {
+  all_years <- seq(start_years[stock], end_years[stock])
+  years <- names(RE_results_resampled_old[[stock]][[1]])
+  POA_list <- list()
+  for(year in 1:length(years)) {
+    POA_list[[year]] <- POA_fun_old(RE_results_resampled_old[[stock]]$WESTERN[[years[year]]]$biomA,
+                                RE_results_resampled_old[[stock]]$CENTRAL[[years[year]]]$biomA,
+                                RE_results_resampled_old[[stock]]$EASTERN[[years[year]]]$biomA)
+    
+    POA_list[[year]]$Year <- all_years
+  }
+  RE_POA_resampled_old[[stock]] <- POA_list
+  names(RE_POA_resampled_old[[stock]]) <- years
+}
+names(RE_POA_resampled_old) <- stock_folder_names
+
+
+# Transforming VAST results into POA
+VAST_POA <- list()
+for (stock in 1:N_stock) {
+  VAST_POA[[stock]] <- POA_fun(VAST_results_all[[stock]]$Estimate_metric_tons[VAST_results_all[[stock]]$Subregion == subregion[1]],
+        VAST_results_all[[stock]]$Estimate_metric_tons[VAST_results_all[[stock]]$Subregion == subregion[2]],
+        VAST_results_all[[stock]]$Estimate_metric_tons[VAST_results_all[[stock]]$Subregion == subregion[3]])
+VAST_POA[[stock]]$Year <- survey_years[[stock]][[1]]
+}
+names(VAST_POA) <- stock_folder_names
+
+# Calculate POA for VAST resampled results (POP only for now)
+VAST_POA_resampled <- list()
+
+  year_names <- names(VAST_results_resampled[[1]])
+  POA_list <- list()
+  for(year in 1:length(year_names)) {
+    results <- VAST_results_resampled[[1]][[year_names[year]]]
+POA_list[[year]] <- POA_fun(results$Estimate_metric_tons[results$Subregion == subregion[1]],
+        results$Estimate_metric_tons[results$Subregion == subregion[2]],
+        results$Estimate_metric_tons[results$Subregion == subregion[3]])
+POA_list[[year]]$Year <- survey_years[[1]][[1]]
+  }
+names(POA_list) <- year_names
+VAST_POA_resampled[[1]] <- POA_list
+names(VAST_POA_resampled) <- stock_folder_names[1]
+
+# Transforming survey data biomass estimates into proportion of area, again after excluding 2001 from western and central (because there is no eastern data)
+alt_survey_data <- list()
+for(stock in 1:N_stock) {
+  alt_survey_data[[stock]] <- list()
+  for(sub in 1:N_sub) {
+    alt_survey_data[[stock]][[sub]] <- separated_stock_data[[stock]][[sub]][separated_stock_data[[stock]][[sub]]$YEAR != 2001,]
+  }
+  names(alt_survey_data[[stock]]) <- subregion
+}
+names(alt_survey_data) <- stock_folder_names
+
+# Now to calculate POA:
+survey_data_POA_old <- list()
+for (stock in 1:N_stock) {
+  survey_data_POA_old[[stock]] <- POA_fun_old(alt_survey_data[[stock]]$WESTERN$AREA_BIOMASS, alt_survey_data[[stock]]$CENTRAL$AREA_BIOMASS, alt_survey_data[[stock]]$EASTERN$AREA_BIOMASS)
+  survey_data_POA_old[[stock]]$Year <- alt_survey_data[[stock]][[1]]$YEAR
+}
+names(survey_data_POA_old) <- stock_folder_names
+
+
+```
+
+```{r POA plots}
+# Function to plot stacked proportion of area for each subregion
+POA_plot_fun <- function(results_data, 
+                         stock_name, 
+                         missing_year,
+                         plot_folder) {
+  # Changing dataframe format to long in order to plot easier
+  long_df <- melt(results_data, id.vars = "Year")
+  
+  # Creating custom colors that are color-blind friendly
+  myColors <- brewer.pal(3, "Dark2")
+  names(myColors) <- subregion
+  
+  # Plotting resampled POA results as stacked bars across timeseries
+  plot <- ggplot(long_df, aes(x = Year, y = value, fill = variable)) +
+    geom_bar(position = "fill", stat = "identity") +
+    scale_fill_manual(values = myColors, name = "Subregion") +
+    labs(title = paste0(stock_name, " - RE results (missing ", missing_year, ")"), y = "Proportion of Area")
+  
+  ggsave(filename = paste0(stock_folder_names[stock], "_POA_", missing_year, ".png"), plot = plot, path = plot_folder)
+}
+
+for(stock in 1:N_stock) {
+  survey_years <- sub("X", "", names(RE_POA_resampled[[stock]]))
+  for(year in 1:length(survey_years)) {
+    POA_plot_fun(RE_POA_resampled[[stock]][[year]], 
+                 stock_names[stock], 
+                 survey_years[year],
+                 here("Plots/resampled_results"))
+  }
+  # Plot all data as well
+  POA_plot_fun(RE_POA[[stock]], 
+                 stock_names[stock], 
+                 "all",
+                 here("Plots"))
+}
+
+
+for (stock in 1:N_stock) {
+  for (sub in 1:N_sub) {
+  plot <- ggplot() +
+    geom_point(data = RE_POA[[stock]], aes(x = Year, y = get(paste0(subregion[sub], "_POA")), color = "RW")) +
+  geom_line(data = RE_POA[[stock]], aes(x = Year, y = get(paste0(subregion[sub], "_POA")), color = "RW")) +
+  geom_point(data = survey_data_POA[[stock]], aes(x = Year, y = get(paste0(subregion[sub], "_POA")), color = "survey")) +
+  geom_line(data = survey_data_POA[[stock]], aes(x = Year, y = get(paste0(subregion[sub], "_POA")), color = "survey")) +
+  geom_point(data = VAST_POA[[stock]], aes(x = Year, y = get(paste0(subregion[sub], "_POA")), color = "VAST")) +
+  geom_line(data = VAST_POA[[stock]], aes(x = Year, y = get(paste0(subregion[sub], "_POA")), color = "VAST")) +
+    scale_color_manual(values = other_colors, name = "") +
+    labs(title = paste0(stock_names[stock], " - ", subregion[sub]), y = "Proportion of Area")
+  # Save plot 
+  ggsave(filename = paste0(stock_folder_names[stock], "_", subregion[sub], "_POA_comparison_plot.png"), plot = plot, path = here("Plots"))
+  }
+}
+
+## Plot RE, VAST and survey POA for POP western
+# Transform RE POA dataframe & exclude non-survey years
+RE_long_df <- melt(RE_POA[[1]], id.vars = "Year")
+colnames(RE_long_df) <- c("Year", "Subregion", "POA")
+RE_long_df <- RE_long_df[RE_long_df$Year %in% survey_years[[1]][[1]],]
+# Exclude 2001 because survey doesn't have that year
+RE_long_df <- RE_long_df[-which(RE_long_df$Year == 2001),]
+RE_long_df$data_type <- "RW results"
+levels(RE_long_df$Subregion) <- subregion
+
+#Transform VAST POA dataframe & exclude 2001
+VAST_long_df <- melt(VAST_POA[[1]], id.vars = "Year")
+colnames(VAST_long_df) <- c("Year", "Subregion", "POA")
+VAST_long_df <- VAST_long_df[-which(VAST_long_df$Year == 2001),]
+VAST_long_df$data_type <- "delta-GLMM results"
+levels(VAST_long_df$Subregion) <- subregion
+
+# Transform survey POA dataframe and combine with RE 
+survey_long_df <- melt(survey_data_POA[[1]], id.vars = "Year")
+colnames(survey_long_df) <- c("Year", "Subregion", "POA")
+survey_long_df$data_type <- "survey data"
+levels(survey_long_df$Subregion) <- subregion
+long_df <- rbind(RE_long_df, VAST_long_df, survey_long_df)
+
+
+# Changing subregion values in order to match custom palette
+levels(long_df$Subregion) <- subregion
+
+# Custom colors
+mycolors <- model_colors
+names(mycolors) <- c("RW results", "delta-GLMM results", "survey data")
+
+plot <- ggplot(long_df) +
+    geom_bar(aes(x = Year, y = POA, fill = data_type), position = "dodge", stat = "identity") +
+  facet_wrap(vars(Subregion)) +
+    scale_fill_manual(values = mycolors, name = "") +
+    labs(title = paste0(stock_names[[1]], " - Proportion of Area comparison"), y = "Proportion of Area") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+  
+ggsave(filename = paste0(stock_folder_names[stock], "_POA_comparison.png"), plot = plot, path = here("Plots"))
+
+
+
+
+```
+
+#### Checking for bias with either model proportion
+```{r bias plots}
+plot(RE_POA_resampled$Sebastes_alutus$X1990$WESTERN_POA[RE_POA_resampled$Sebastes_alutus$X1990$Year %in% survey_years$Sebastes_alutus$EASTERN], survey_data_POA$Sebastes_alutus$WESTERN_POA)
+
+# Separating out estimates from missing year from each resampled results
+RE_POA_missing_year_estimates <- as.data.frame(matrix(NA, nrow = length(survey_years[[1]]$EASTERN), ncol = 4))
+colnames(RE_POA_missing_year_estimates) <- c(subregion, "Year")
+VAST_POA_missing_year_estimates <- as.data.frame(matrix(NA, nrow = length(survey_years[[1]]$EASTERN), ncol = 4))
+colnames(VAST_POA_missing_year_estimates) <- c(subregion, "Year")
+
+for(year in 1:length(survey_years[[1]]$EASTERN)) {
+  RE_POA_missing_year_estimates[year, ] <- RE_POA_resampled[[1]][[year]][RE_POA_resampled[[1]][[year]]$Year == survey_years[[1]]$EASTERN[year],]
+  VAST_POA_missing_year_estimates[year, ] <- VAST_POA_resampled[[1]][[year]][VAST_POA_resampled[[1]][[year]]$Year == survey_years[[1]]$EASTERN[year],]
+}
+# Appending survey data into each model result dataframe
+RE_test <- melt(RE_POA_missing_year_estimates, id.vars = "Year", value.name = "RE_POA", variable.name = "Subregion")
+VAST_test <- melt(VAST_POA_missing_year_estimates, id.vars = "Year", value.name = "VAST_POA", variable.name = "Subregion")
+survey_test <- melt(survey_data_POA[[1]], id.vars = "Year", value.name = "survey_POA", variable.name = "Subregion")
+levels(survey_test$Subregion) <- subregion
+
+RE_test_2 <- cbind(RE_test, survey_test$survey_POA)
+colnames(RE_test_2)[4] <- "survey_POA"
+VAST_test_2 <- cbind(VAST_test, survey_test$survey_POA)
+colnames(VAST_test_2)[4] <- "survey_POA"
+
+## Plotting RE estimates vs survey proportions
+# RE vs survey
+ggplot(RE_test_2, aes(x = RE_POA, y = survey_POA, color = Subregion)) +
+  geom_point() +
+  geom_smooth(method = "lm",
+              formula = y ~ x) +
+  geom_abline(intercept = 0, slope = 1) +
+  facet_wrap(vars(Subregion), scales = "free") 
+  # lims(x = c(0, 1), y = c(0, 1))
+
+
+RE_v_survey_POA <- lm(survey_POA ~ RE_POA, data = RE_test_2[RE_test_2$Subregion == subregion[1],])
+summary(RE_v_survey_POA)
+### Results from lm summary: 
+# intercept = 0.02381, slope = 0.92857 for whole dataset
+# intercept = 0.11189, slope = 0.17270 for western
+# intercept = 0.2628, slope = 0.5628 for central
+# intercept = 0.08014, slope = 0.72673 for eastern
+## Plotting the lm as a line on the scatterplot, one subregion at a time
+ggplot(RE_test_2[RE_test_2$Subregion == subregion[1],], aes(x = RE_POA, y = survey_POA, color = Subregion)) +
+  geom_point() +
+  # geom_smooth(method = "lm",
+  #             formula = y ~ x) +
+  geom_abline(intercept = 0.11189, slope = 0.17270) +
+  lims(x = c(0, 1), y = c(0, 1))
+
+ggplot(RE_test_2[RE_test_2$Subregion == subregion[2],], aes(x = RE_POA, y = survey_POA, color = Subregion)) +
+  geom_point() +
+  # geom_smooth(method = "lm",
+  #             formula = y ~ x) +
+  geom_abline(intercept = 0.2628, slope = 0.5628) +
+  lims(x = c(0, 1), y = c(0, 1))
+
+# VAST vs survey
+ggplot(VAST_test_2, aes(x = VAST_POA, y = survey_POA, color = Subregion)) +
+  geom_point() +
+  geom_smooth(method = "lm",
+              formula = y ~ x) +
+  geom_abline(intercept = 0, slope = 1) +
+   facet_wrap(vars(Subregion), scales = "free") 
+  # lims(x = c(0, 1), y = c(0, 1))
+
+VAST_v_survey_POA <- lm(survey_POA ~ VAST_POA, data = VAST_test_2[VAST_test_2$Subregion == subregion[3],])
+summary(VAST_v_survey_POA)
+### Results from lm summary: 
+# intercept = 0.007117, slope = 0.978649 for whole dataset
+# intercept = -0.01321, slope = 1.38661 for western
+# intercept = 0.09794, slope = 0.85085 for central
+# intercept = 0.004723, slope = 0.857513 for eastern
+
+# Plot: scatterplot of survey proportion (x-axis) against jacknife estimate of proportion (y-axis) for the RE (blue plots) vs. VAST (red points) for each region (panel columns) and species (panel row), showing the log-log slope (blue and red lines for RE and VAST models respectively)
+
+# Combining estimates to compare in one plot
+Combined_POA_v1 <- cbind(RE_test, VAST_test[, 3], survey_test[,3])
+colnames(Combined_POA_v1)[c(3:5)] <- c("RW", "delta-GLMM", "survey")
+Combined_POA_v2 <- melt(Combined_POA_v1, id.vars = c("Year", "Subregion", "survey"))
+colnames(Combined_POA_v2)[c(4:5)] <- c("model_type", "estimated_POA")
+# manual colors
+my_colors <- c("RW" = "blue", "delta-GLMM" = "red") 
+
+
+plot <- ggplot(Combined_POA_v2, aes(x = estimated_POA, y = survey, color = model_type)) +
+  geom_point() +
+  # geom_abline(intercept = 0, slope = 1) +
+  geom_smooth(method = "lm",
+              formula = y ~ x, se = FALSE) +
+  scale_color_manual(values = my_colors) +
+  facet_wrap(vars(Subregion), scales = "free") +
+  labs(title = stock_names[1], x = "Estimated Proportion", y = "Survey proportion", color = "Model") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+ggsave(filename = paste0(stock_folder_names[1], "_POA_comparison_v1.png"), plot = plot, path = here("Plots"))
+```
+
+
+#### Calculating standard error for proportion of area
+
+Based on formulation from Thorson 2018.
+
+$$
+\widehat{SE}[P_c(t)]^2 \approx  
+\frac{\hat{I}_c(t)^2}{\hat{I}(t)^2} 
+\left[ 
+\frac{\widehat{SE}[\hat{I}_c(t)]^2}{\hat{I}_c(t)^2} 
+- 2 \frac {\widehat{SE}[\hat{I}_c(t)]^2}{\hat{I}(t)\hat{I}_c(t)} 
++ \frac {\sum_{c=1}^{n_c}\widehat{SE}[\hat{I}_c(t)]^2}{\hat{I}_c(t)^2} \right]
+$$
+
+
+```{r POA SE}
+
+# Function to calculate standard errors for POA
+POA_se_function <- function(results_data, 
+                            #years,
+                            model_type = c("RE", "VAST")) {
+  # Standardizing column names
+  if (model_type == "RE") {
+    colnames(results_data)[which(names(results_data) == "biomA")] <- "Biomass"
+    colnames(results_data)[which(names(results_data) == "yrs")] <- "Year"
+    # Calculate SE from the log SE and log biomass columns with lognormal variance equation
+    results_data$Biomass_SE <- sqrt((exp(results_data$biomsd.sd^2) - 1)*exp(2*results_data$biomsd + results_data$biomsd.sd^2))
+  } else if (model_type == "VAST") {
+    colnames(results_data)[which(names(results_data) == "Estimate_metric_tons")] <- "Biomass"
+    colnames(results_data)[which(names(results_data) == "SD_mt")] <- "Biomass_SE"
+  } 
+  # Set up year vector from results data
+  years <- sort(unique(results_data$Year))
+  # Separating out each subregions biomass results
+  I_t_subregions <- as.data.frame(matrix(NA, nrow = length(years), ncol = 3))
+  colnames(I_t_subregions) <- subregion
+  for(sub in 1:N_sub) {
+    I_t_subregions[, sub] <- results_data$Biomass[results_data$Subregion == subregion[sub]]
+  }
+  # Summing biomass results for denominator
+  I_t <- vector()
+  for(i in 1:nrow(I_t_subregions)) {
+    I_t[i] <- sum(I_t_subregions[i, 1], I_t_subregions[i, 2], I_t_subregions[i, 3])
+  }
+  # Separate out standard errors 
+  SE_I_t <- as.data.frame(matrix(NA, ncol = 3, nrow = length(years)))
+  colnames(SE_I_t) <- subregion
+  for(sub in 1:N_sub) {
+    SE_I_t[, sub] <- results_data$Biomass_SE[results_data$Subregion == subregion[sub]]
+  }
+  
+  # Calculate standard errors for proportions for each subregion
+  SE_P_t_subregions <- as.data.frame(matrix(NA, nrow = length(years), ncol = 3))
+  colnames(SE_P_t_subregions) <- subregion
+  # Calculating fourth part of equation first because it requires a different for loop than the others
+  part_4 <- vector()
+  for(year in 1:length(years)) {
+    part_4[year] <- sum(SE_I_t[year, 1]^2, SE_I_t[year, 2]^2, SE_I_t[year, 3]^2)/I_t[year]^2
+  }
+  
+  for(sub in 1:N_sub) {
+    part_1 <- I_t_subregions[, sub]^2/I_t^2
+    part_2 <- SE_I_t[, sub]^2/I_t_subregions[, sub]^2
+    part_3 <- 2*(SE_I_t[, sub]^2/(I_t*I_t_subregions[, sub]))
+    # Putting all parts together for each subregion
+    SE_P_t_subregions[, sub] <- part_1*(part_2 - part_3 + part_4)
+  }
+  SE_P_t_subregions <- sqrt(SE_P_t_subregions)
+  SE_P_t_subregions$Year <- years
+  return(SE_P_t_subregions)
+}
+
+# Example 
+results_data <- VAST_results_resampled$Sebastes_alutus$X1990
+prop_SEs <- POA_se_function(results_data = results_data,
+                            "VAST")
+results_data <- rbind(RE_results_resampled$Sebastes_alutus$WESTERN$X1990,
+                      RE_results_resampled$Sebastes_alutus$CENTRAL$X1990,
+                      RE_results_resampled$Sebastes_alutus$EASTERN$X1990)
+prop_SEs <- POA_se_function(results_data = results_data,
+                            "RE")
+
+# Calculating proportion SE for each stock and subregion combo for all data results, and adding onto the dataframes that have proportion already
+RE_prop_SEs <- list()
+# VAST_prop_SEs <- list()
+for(stock in 1:N_stock) {
+  # Calculating for RE
+  RE_prop_SEs[[stock]] <- POA_se_function(results_data = RE_results_all[[stock]], "RE")
+
+  # Calculating for VAST
+  # VAST_prop_SEs[[stock]] <- POA_se_function(results_data = VAST_results_all[[stock]], "VAST")
+}
+names(RE_prop_SEs) <- stock_folder_names
+# names(VAST_prop_SEs) <- stock_folder_names
+
+# Combining POA and POA SEs for the results with all data, in order to plot it below
+
+
+# Adding standard errors to proportion plot and saving plots for all stocks & subregions
+for(stock in 1:N_stock) {
+  # Separate out survey year data for random walk results
+  RE_POA_sy <- RE_POA[[stock]][RE_POA[[stock]]$Year %in% survey_years[[stock]][[1]], c(1:3)]
+  RE_prop_SEs_sy <- RE_prop_SEs[[stock]][RE_prop_SEs[[stock]]$Year %in% survey_years[[stock]][[1]], c(1:3)]
+  # Combine RE and VAST POA and POA SE into one dataframe
+  plot_data <- cbind(RE_POA_sy, RE_prop_SEs_sy, VAST_POA[[stock]][,c(1:3)], VAST_prop_SEs[[stock]])
+  colnames(plot_data) <- c(paste0(subregion, "_RE_POA"), paste0(subregion, "_RE_POA_SE"), paste0(subregion, "_VAST_POA"), paste0(subregion, "_VAST_POA_SE"),"Year")
+
+  for(sub in 1:N_sub) {
+    POA <- paste0(subregion[sub], "_POA")
+    POA_RE <- paste0(subregion[sub], "_RE_POA")
+    POA_VAST <- paste0(subregion[sub], "_VAST_POA")
+    POA_RE_SE <- paste0(subregion[sub], "_RE_POA_SE")
+    POA_VAST_SE <- paste0(subregion[sub], "_VAST_POA_SE")
+    plot <- ggplot() +
+  geom_point(data = plot_data, aes(x = Year, y = get(POA_RE), color = "RW")) +
+  geom_line(data = plot_data, aes(x = Year, y = get(POA_RE), color = "RW")) +
+  geom_errorbar(data = plot_data, aes(x = Year, y = get(POA_RE), ymin = get(POA_RE) - get(POA_RE_SE), ymax = get(POA_RE) + get(POA_RE_SE), color = "RW")) +
+    geom_point(data = plot_data, aes(x = Year, y = get(POA_VAST), color = "VAST")) +
+  geom_line(data = plot_data, aes(x = Year, y = get(POA_VAST), color = "VAST")) +
+  geom_errorbar(data = plot_data, aes(x = Year, y = get(POA_VAST), ymin = get(POA_VAST) - get(POA_VAST_SE), ymax = get(POA_VAST) + get(POA_VAST_SE), color = "VAST")) +
+  geom_point(data = survey_data_POA[[stock]], aes(x = Year, y = get(POA), color = "survey")) +
+  geom_line(data = survey_data_POA[[stock]], aes(x = Year, y = get(POA), color = "survey")) +
+    scale_colour_manual(values = model_colors, name = "") +
+  labs(title = paste0(stock_names[stock], " - ", subregion[sub]), y = "Proportion of Area")
+  # Save plot
+  ggsave(filename = paste0(stock_folder_names[stock], "_", subregion[sub], "_POA_comparison_plot.png"), plot = plot, path = here("Plots"))
+  }
+}
+
+### Single species & subregion (POP, western) plot 
+## Combine POA and prop_SEs data sets into a melted dataframe for RE
+RE_long_df_2 <- melt(RE_prop_SEs[[1]], id.vars = "Year")
+colnames(RE_long_df_2) <- c("Year", "Subregion", "POA_SE")
+RE_long_df_2 <- RE_long_df_2[RE_long_df_2$Year %in% survey_years[[1]][[1]],]
+# Exclude 2001 because survey doesn't have that year
+RE_long_df_2 <- RE_long_df_2[-which(RE_long_df_2$Year == 2001),]
+# Change subregion factor levels
+levels(RE_long_df_2$Subregion) <- subregion
+# Combining POA and POA_SE into one dataframe
+RE_long_df_2 <- cbind(RE_long_df, RE_long_df_2[,3])
+colnames(RE_long_df_2)[5] <- "POA_SE"
+
+## Combine POA and prop_SEs data sets into a melted dataframe for VAST
+VAST_long_df_2 <- melt(VAST_prop_SEs[[1]], id.vars = "Year")
+colnames(VAST_long_df_2) <- c("Year", "Subregion", "POA_SE")
+VAST_long_df_2 <- VAST_long_df_2[VAST_long_df_2$Year %in% survey_years[[1]][[1]],]
+# Exclude 2001 because survey doesn't have that year
+VAST_long_df_2 <- VAST_long_df_2[-which(VAST_long_df_2$Year == 2001),]
+# Change subregion factor levels
+levels(VAST_long_df_2$Subregion) <- subregion
+# Combining POA and POA_SE into one dataframe
+VAST_long_df_2 <- cbind(VAST_long_df, VAST_long_df_2[,3])
+colnames(VAST_long_df_2)[5] <- "POA_SE"
+
+## Combine RE, VAST and survey POA and POA SEs
+# Transform survey POA dataframe and combine with RE 
+survey_long_df <- melt(survey_data_POA[[1]], id.vars = "Year")
+colnames(survey_long_df) <- c("Year", "Subregion", "POA")
+survey_long_df$data_type <- "survey data"
+levels(survey_long_df$Subregion) <- subregion
+survey_long_df$POA_SE <- "NA"
+# Combine all data sets
+long_df_2 <- rbind(RE_long_df_2, VAST_long_df_2, survey_long_df)
+long_df_2$POA_SE <- as.numeric(long_df_2$POA_SE)
+
+# Setting up upper and lower confidence intervals, with 0 and 1 set as the upper and lower limits
+for(i in 1:nrow(long_df_2)) {
+  long_df_2$POA_LCI[i] <- max((long_df_2$POA - sqrt(long_df_2$POA_SE))[i], 0)
+  long_df_2$POA_UCI[i] <- min((long_df_2$POA + sqrt(long_df_2$POA_SE))[i], 1)
+}
+
+for(sub in 1:N_sub) {
+  plot <- ggplot(long_df_2[long_df_2$Subregion == subregion[sub],]) +
+  geom_point(aes(x = Year, y = POA, color = data_type), position = position_dodge(width = 0.3)) +
+  geom_line(aes(x = Year, y = POA, color = data_type), position = position_dodge(width = 0.3)) +
+  geom_errorbar(aes(x = Year, y = POA, ymin = (POA - sqrt(POA_SE)), ymax = (POA + sqrt(POA_SE)), color = data_type), position = position_dodge(width = 0.3)) +
+  scale_colour_manual(values = mycolors, name = "") +
+  labs(title = paste0(stock_names[1], " - ", subregion[sub]), y = "Proportion of Area") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+  # Save plot
+ggsave(filename = paste0(stock_folder_names[1], "_", subregion[sub], "_all_POA_comparison_plot.png"), plot = plot, path = here("Plots"))
+}
+
+plot <- ggplot(long_df_2) +
+  geom_point(aes(x = Year, y = POA, color = data_type), position = position_dodge(width = 0.3)) +
+  geom_line(aes(x = Year, y = POA, color = data_type), position = position_dodge(width = 0.3)) +
+  geom_errorbar(aes(x = Year, y = POA, ymin = POA_LCI, ymax = POA_UCI, color = data_type), position = position_dodge(width = 0.3)) +
+  facet_wrap(vars(Subregion)) +
+  scale_colour_manual(values = mycolors, name = "") +
+  labs(title = stock_names[1], y = "Proportion of Area") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+  # Save plot
+ggsave(filename = paste0(stock_folder_names[1],  "_all_POA_comparison_plot_v2.png"), plot = plot, path = here("Plots"))
+  
+  
+# Calculating proportion SEs for resampled results
+## First, reformating RE_results_resampled so that the subregions are all in one dataframe for each missing year
+RE_resampled_melted <- list()
+for(stock in 1:N_stock) {
+  RE_year <- list()
+  # choosing the subregion with the smallest number of years
+  years <- survey_years[[stock]][[3]]
+for(year in 1:length(years)) {
+    RE_year[[year]] <- rbind(RE_results_resampled[[stock]][[subregion[1]]][[paste0("X", years[year])]], RE_results_resampled[[stock]][[subregion[2]]][[paste0("X", years[year])]], RE_results_resampled[[stock]][[subregion[3]]][[paste0("X", years[year])]])
+}
+names(RE_year) <- paste0("X", years)
+RE_resampled_melted[[stock]] <- RE_year
+}
+names(RE_resampled_melted) <- stock_folder_names
+
+# With the new dataframe, calculate proportion SE for RE results
+RE_resampled_prop_SE <- list()
+for(stock in 1:N_stock) {
+  POA_SE_list <- list()
+  for(year in 1:length(survey_years[[stock]][[3]])) {
+    POA_SE_list[[year]] <- POA_se_function(RE_resampled_melted[[stock]][[year]],
+                                           # survey_years[[stock]][[3]],
+                                           "RE")
+    POA_SE_list[[year]]$Year <- c(start_years[stock]:end_years[stock])
+  }
+  names(POA_SE_list) <- paste0("X", survey_years[[stock]][[3]])
+  RE_resampled_prop_SE[[stock]] <- POA_SE_list
+}
+names(RE_resampled_prop_SE) <- stock_folder_names
+
+# Calculate proportion SE for VAST resampled results
+VAST_resampled_prop_SE <- list()
+# for(stock in 1:N_stock) {
+  POA_SE_list <- list()
+  for(year in 1:length(survey_years[[1]][[3]])) {
+    POA_SE_list[[year]] <- POA_se_function(VAST_results_resampled[[1]][[year]],
+                                           # survey_years[[1]][[3]],
+                                           "VAST")
+    POA_SE_list[[year]]$Year <- survey_years[[1]][[1]]
+  }
+  names(POA_SE_list) <- paste0("X", survey_years[[1]][[3]])
+  VAST_resampled_prop_SE[[1]] <- POA_SE_list
+# }
+names(VAST_resampled_prop_SE) <- stock_folder_names[1]
+
+### Plot showing the RE & VAST results for each missing year compared to the survey data
+# First, set up data frame with the POA and prop_SE for each missing year
+years <- unique(survey_data_POA$Sebastes_alutus$Year)
+missing_POA <- as.data.frame(matrix(NA, ncol = 4, nrow = length(years)))
+missing_prop_SE <- as.data.frame(matrix(NA, ncol = 4, nrow = length(years)))
+colnames(missing_POA) <- c(subregion, "Year")
+colnames(missing_prop_SE) <- c(subregion, "Year")
+for(year in 1:length(years)) {
+  missing_POA[year, ] <- RE_POA_resampled[[1]][[year]][RE_POA_resampled[[1]][[year]]$Year == years[year],]
+  missing_prop_SE[year, ] <- RE_resampled_prop_SE[[1]][[year]][RE_resampled_prop_SE[[1]][[year]]$Year == years[year],]
+}
+
+
+```
+
+
+
+```{r proportion example plot}
+# Adding standard errors to proportion plot for western
+test_RE_POA <- RE_POA[[1]][RE_POA[[1]]$Year %in% years,]
+test_RE_POA$WESTERN_POA_SE<- SE_P_t_subregions$WESTERN
+
+plot <- ggplot(data = test_RE_POA, aes(x = Year, y = WESTERN_POA)) +
+  geom_point() +
+  geom_line() +
+  geom_errorbar(aes(ymin = WESTERN_POA - sqrt(WESTERN_POA_SE), ymax = WESTERN_POA + sqrt(WESTERN_POA_SE))) +
+    # scale_color_manual(values = other_colors, name = "") +
+  labs(title = paste0(stock_names[1], " - ", subregion[1]), y = "Proportion of Area")
+```
+
+## Second step: Model performance evaluation
+
+### Accuracy metric - Simple difference for missing year
+For each jackknifed data set, compare the estimated biomass proportion for the year for each subregion ($P_{s,t}$) that is missing to the survey data for that year for each subregion ($O_{s,t}$) by calculating the absolute value of the difference ($D_{s,t}$)
+
+$$
+D_{s,t} = |P_{s,t} - O_{s,t}|
+$$
+
+```{r absolute difference}
+
+# Function to calculate absolute difference between resmapled results and survey data
+abs_diff_fun_old <- function(resampled_POA, 
+                         survey_POA, 
+                         stocks, 
+                         survey_years, 
+                         subregions) {
+  abs_diff <- list()
+for(stock in 1:length(stocks)) {
+  abs_diff[[stock]] <- as.data.frame(matrix(NA, nrow = length(survey_years[[stock]][[3]]), ncol = 3))
+years <- survey_years[[stock]][[3]]
+for (year in 1:length(years)) {
+  year_POA <- resampled_POA[[stock]][[paste0("X", years[year])]]
+  for(sub in 1:length(subregions)) {
+  abs_diff[[stock]][year, sub] <- year_POA[year_POA$Year == years[year], sub] - survey_POA[[stock]][survey_POA[[stock]]$Year == years[year], sub]
+  }
+  names(abs_diff[[stock]]) <- subregions
+}
+abs_diff[[stock]]$Year <- survey_years[[stock]][[3]] 
+abs_diff[[stock]] <- melt(abs_diff[[stock]], id.vars = "Year")
+
+abs_diff[[stock]]$direction <- NA
+  for(row in 1:nrow(abs_diff[[stock]])) {
+    if(abs_diff[[stock]]$value[row] > 0) {
+      abs_diff[[stock]]$direction[row] <- "Greater than"
+    } else {
+      abs_diff[[stock]]$direction[row] <- "Less than"
+    }
+  }
+}
+names(abs_diff) <- stock_folder_names[names(stocks)]
+
+return(abs_diff)
+}
+
+# Calculate absolute difference between RE resampled results and the survey data
+RE_abs_diff_old <- abs_diff_fun_old(RE_POA_resampled_old, 
+                            survey_data_POA_old, 
+                            stock_names, 
+                            survey_years, 
+                            subregion)
+
+# Calculate absolute difference between VAST resampled results and the survey data
+VAST_abs_diff <- abs_diff_fun(VAST_POA_resampled, 
+                            survey_data_POA, 
+                            stock_names[1], 
+                            survey_years, 
+                            subregion)
+
+
+# custom colors
+type_of_difference_colors <- brewer.pal(8, "Dark2")[c(3,6)]
+names(type_of_difference_colors) <- c("Greater than", "Less than")
+
+# Plotting differences for RE & survey, with both stocks
+for(stock in 1:N_stock) {
+plot <- ggplot(data = RE_abs_diff[[stock]], aes(x = abs(value), y = Year)) +
+  geom_point(aes(color = direction)) +
+  facet_wrap(vars(variable)) +
+  scale_color_manual(values = type_of_difference_colors, name = "Predicted compared to Observed") +
+  labs(title = paste0(stock_names[stock], " - Random walk vs survey data"), x = "Absolute difference", y = "Missing year") +
+  theme(legend.position = "bottom")
+  
+  ggsave(filename = paste0(stock_folder_names[stock], "_abs_diff.png"), plot = plot, path = here("Plots/metrics"))
+}
+
+# Plotting differences for VAST & survey, with just POP
+# combine the 3 dataframes into one for plotting ease
+abs_diff_POP <- rbind(VAST_abs_diff$Sebastes_alutus, RE_abs_diff$Sebastes_alutus)
+colnames(abs_diff_POP) <- c("Year", "Subregion", "diff", "direction")
+abs_diff_POP$model <- c(rep("delta-GLMM", nrow(VAST_abs_diff$Sebastes_alutus)), rep("RW", nrow(RE_abs_diff$Sebastes_alutus)))
+
+
+plot <- ggplot(data = abs_diff_POP) +
+  geom_bar(aes(y = abs(diff), x = as.factor(Year), fill = model), stat = "identity", position=position_dodge()) +
+  facet_wrap(vars(Subregion), scales = "free") +
+  # scale_color_manual(values = model_colors[-3], name = "") +
+  labs(title = paste0(stock_names[1], " - Comparison of absolute difference \nbetween random walk and VAST results"), y = "Absolute difference", x = "Missing year") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  theme(legend.position = "bottom")
+  
+ggsave(filename = paste0(stock_folder_names[1], "_RE_v_VAST_abs_diff.png"), plot = plot, path = here("Plots/metrics"))
+
+
+##### Mean absolute difference calculation
+# RE for both stocks
+RE_mean_abs_diff_old <- as.data.frame(matrix(NA, nrow = N_stock, ncol = N_sub,
+                                         dimnames = list(stock_folder_names, subregion)))
+for(stock in 1:N_stock) {
+  for(sub in 1:N_sub) {
+    results <- RE_abs_diff_old[[stock]]$value[RE_abs_diff_old[[stock]]$variable == subregion[sub]]
+    RE_mean_abs_diff_old[stock, sub] <- sum(abs(results))/length(results)
+  }
+}
+
+# VAST for POP (for now)
+VAST_mean_abs_diff <- as.data.frame(matrix(NA, nrow = N_stock, ncol = N_sub,
+                                         dimnames = list(stock_folder_names, subregion)))
+for(stock in 1:1) {
+  for(sub in 1:N_sub) {
+    results <- VAST_abs_diff[[stock]]$value[VAST_abs_diff[[stock]]$variable == subregion[sub]]
+    VAST_mean_abs_diff[stock, sub] <- sum(abs(results))/length(results)
+  }
+}
+
+### Plot absolute difference
+# Using histograms
+plot <- ggplot(data = abs_diff_POP, aes(x = abs(diff), fill = model)) + 
+  geom_histogram(alpha = 0.4, position = "identity", bins = 20) +
+  scale_fill_manual(values = c("delta-GLMM" = "red", "RW" = "blue")) +
+  facet_wrap(vars(Subregion)) +
+  theme_bw() + 
+  theme(legend.position = "bottom") +
+  labs(title = stock_names[1], x = "Absolute difference", y = "", x = "Absolute difference", y = "", color = "Model")
+
+ggsave(filename = paste0(stock_folder_names[1], "_RE_v_VAST_abs_diff_hist.png"), plot = plot, path = here("Plots/metrics"))
+
+# Using boxplots
+plot <- ggplot(data = abs_diff_POP, aes(y = abs(diff), x = model, fill = Subregion)) + 
+  geom_boxplot() +
+  scale_fill_manual(values = subregion_colors) +
+  theme_bw() + 
+  theme(legend.position = "bottom") +
+  labs(title = paste0(stock_names[1], " - Absolute difference between survey proportion \nand model estimated proportion"), x = "Model", y = "Absolute difference")
+
+ggsave(filename = paste0(stock_folder_names[1], "_RE_v_VAST_abs_diff_boxplot.png"), plot = plot, path = here("Plots/metrics"))
+
+```
+
+
+### Metric option 1: Mean absolute scaled error - NOT USING THIS METRIC
+
+$$
+\text{MASE} = \frac{ \frac{1}{N} \sum_{n = 1}^{N} \left| P_n - O_n \right| } { \frac{1}{T - 1} \sum_{t = 2}^{T} \left| O_t - O_{t-1} \right| }
+$$
+
+```{r MASE, eval=FALSE}
+
+### Function to calculate MASE with either RE or VAST results compared to survey results
+MASE_fun <- function(model_results, survey_data){ 
+  years <- sort(unique(survey_data$Year))
+  N <- length(years) # number of survey years
+  T <- N-1 # number of time step
+
+  inner_numerator_term <- abs(model_results[, 1][model_results$Year %in% years] - survey_data[, 1])
+  full_numerator_term <- (1/N)*sum(inner_numerator_term)
+  
+  inner_denominator_term <- vector()
+  for(i in 1:T) {
+    inner_denominator_term[i] <- abs(survey_data[i+1, 1] - survey_data[i, 1])
+  }
+  full_denominator_term <- 1/(T-1)*sum(inner_denominator_term)
+  
+  MASE <- full_numerator_term/full_denominator_term
+  
+  return(MASE)
+}
+
+# Run MASE calculation on RE results for all data - do I want to do this for each subregion individually, or combine them all? I think by subregion, but check this...
+RE_MASE_all <- list()
+for (stock in 1:N_stock) {
+  sub_MASE <- vector()
+  for (sub in 1:N_sub) {
+  sub_MASE[sub] <- MASE_fun(RE_POA[[stock]][, c(subregion[sub], "Year")], survey_data_POA[[stock]][, c(subregion[sub], "Year")])
+}
+names(sub_MASE) <- subregion
+RE_MASE_all[[stock]] <- sub_MASE
+}
+names(RE_MASE_all) <- stock_folder_names
+
+# Run MASE calculation for VAST results for all data (this is the results that are probably from bad implementation, but its still better than nothing)
+VAST_MASE_all <- list()
+for (stock in 1:N_stock) {
+  sub_MASE <- vector()
+  for (sub in 1:N_sub) {
+  sub_MASE[sub] <- MASE_fun(VAST_POA[[stock]][, c(subregion[sub], "Year")], survey_data_POA[[stock]][, c(subregion[sub], "Year")])
+}
+names(sub_MASE) <- subregion
+VAST_MASE_all[[stock]] <- sub_MASE
+}
+names(VAST_MASE_all) <- stock_folder_names
+
+# Reformatting to combine VAST & RE MASE results for comparison
+all_MASE <- list()
+for(stock in 1:N_stock) {
+  values <- c(unname(VAST_MASE_all[[stock]]), unname(RE_MASE_all[[stock]]))
+  labels <- factor(c(names(VAST_MASE_all[[stock]]), names(RE_MASE_all[[stock]])), levels = subregion)
+  model <- c(rep("VAST", 3), rep("RE", 3))
+  all_MASE[[stock]] <- cbind.data.frame(values, labels, model)
+  colnames(all_MASE[[stock]]) <- c("MASE", "Subregion", "Model")
+}
+names(all_MASE) <- stock_folder_names
+
+
+  
+# Plotting RE vs. VAST MASE results
+for (stock in 1:N_stock) {
+  plot <- ggplot(data = all_MASE[[stock]]) +
+  geom_col(aes(x = Model, y = MASE, fill = Subregion), position = "dodge") +
+   scale_fill_manual(values = subregion_colors, name = "Subregion") +
+  labs(title = paste0(stock_names[stock], " - MASE calculated with POA transformed results with all data \nfor RE & VAST compared to survey data"))
+
+ggsave(filename = paste0(stock_folder_names[stock], "_POA_MASE_RE_v_VAST.png"), plot = plot, path = here("Plots/metrics"))
+}
+
+
+# Calculating MASE for RE results of resampled datasets
+RE_MASE_resampled <- list()
+for (stock in 1:N_stock) {
+  year_list <- list()
+  for (year in 1:length(survey_years[[stock]]$EASTERN)) {
+    year_list[[year]] <- sapply(subregion, function(x) {
+      MASE_fun(RE_POA_resampled[[stock]][[year]][, c(x, "Year")], survey_data_POA[[stock]][, c(x, "Year")])
+    })
+    year_list[[year]] <- stack(year_list[[year]])
+    colnames(year_list[[year]]) <- c("MASE", "Subregion")
+  }
+  names(year_list) <- names(RE_POA_resampled[[stock]])
+  RE_MASE_resampled[[stock]] <- bind_rows(year_list, .id = "Missing_year")
+}
+names(RE_MASE_resampled) <- stock_folder_names
+
+# Plotting MASEs for RE results with resampled datasets
+for(stock in 1:N_stock) {
+  plot1 <- ggplot(data = RE_MASE_resampled[[stock]]) +
+  geom_col(aes(x = Missing_year, y = MASE, fill = Subregion), position = "dodge") +
+   scale_fill_manual(values = myColors, name = "Subregion") +
+  labs(title = paste0(stock_names[stock], " - MASE calculated with POA transformed results with \nresampled datasets for RE compared to survey data")) +
+  xlab("Year extracted in resampled dataset") +
+  theme(legend.position = "bottom")
+
+ggsave(filename = paste0(stock_folder_names[stock], "_POA_MASE_RE_resampled_v1.png"), plot = plot1, path = here("Plots/metrics"))
+  
+# Alternate plot of the above
+plot2 <- ggplot(data = RE_MASE_resampled[[stock]]) +
+  geom_col(aes(x = Missing_year, y = MASE, fill = Subregion), position = "dodge") +
+  facet_grid(rows = vars(Subregion), scales = "free") +
+   scale_fill_manual(values = myColors, name = "Subregion") +
+  labs(title = paste0(stock_names[stock], " - MASE calculated with POA transformed results with \nresampled datasets for RE compared to survey data")) +
+  xlab("Year extracted in resampled dataset") +
+  theme(legend.position = "none")
+
+ggsave(filename = paste0(stock_folder_names[stock], "_POA_MASE_RE_resampled_v2.png"), plot = plot2, path = here("Plots/metrics"))
+}
+
+```
+
+### Metric option 2: Mean relative error - NOT USING THIS METRIC
+
+This metric is the one used in the unpublished 2013 paper to, with this description: "Statistics selected to evaluate the performance of the various methods include the mean relative error (MRE) of biomass (relative error is defined here as estimate/true-1) and variability in these relative errors." After verifying with Jim and Paul, this is the equation I'll use:
+
+$$
+\text{MRE} = \frac{1}{N}\sum_{n = 1}^N \frac{\left| P_n - O_n \right|}{O_n}
+$$
+
+```{r MRE_v2, eval=FALSE}
+
+MRE_v2_fun <- function(model_results, survey_data) {
+  years <- sort(unique(survey_data$Year))
+  N <- length(years) # number of survey years
+  
+  RE_vec <- abs(model_results[, 1][model_results$Year %in% years] - survey_data[, 1])/(survey_data[, 1])
+  
+  MRE <- sum(RE_vec)*(1/N)
+  
+  return(MRE = MRE)
+}
+
+# Calculating MRE for RE results
+RE_MRE_all <- list()
+for (stock in 1:N_stock) {
+  sub_MRE <- vector()
+  for (sub in 1:N_sub) {
+  sub_MRE[sub] <- MRE_v2_fun(RE_POA[[stock]][, c(subregion[sub], "Year")], survey_data_POA[[stock]][, c(subregion[sub], "Year")])
+}
+names(sub_MRE) <- subregion
+RE_MRE_all[[stock]] <- sub_MRE
+}
+names(RE_MRE_all) <- stock_folder_names
+
+# Run MRE calculation for VAST results for all data (this is the results that are probably from bad implementation, but its still better than nothing)
+VAST_MRE_all <- list()
+for (stock in 1:N_stock) {
+  sub_MRE <- vector()
+  for (sub in 1:N_sub) {
+  sub_MRE[sub] <- MRE_v2_fun(VAST_POA[[stock]][, c(subregion[sub], "Year")], survey_data_POA[[stock]][, c(subregion[sub], "Year")])
+}
+names(sub_MRE) <- subregion
+VAST_MRE_all[[stock]] <- sub_MRE
+}
+names(VAST_MRE_all) <- stock_folder_names
+
+# Reformatting to combine VAST & RE MRE results for comparison
+all_MRE <- list()
+for(stock in 1:N_stock) {
+  values <- c(unname(VAST_MRE_all[[stock]]), unname(RE_MRE_all[[stock]]))
+  labels <- factor(c(names(VAST_MRE_all[[stock]]), names(RE_MRE_all[[stock]])), levels = subregion)
+  model <- c(rep("VAST", 3), rep("RE", 3))
+  all_MRE[[stock]] <- cbind.data.frame(values, labels, model)
+  colnames(all_MRE[[stock]]) <- c("MRE", "Subregion", "Model")
+}
+names(all_MRE) <- stock_folder_names
+
+# Plotting RE vs. VAST MRE results
+for (stock in 1:N_stock) {
+  plot <- ggplot(data = all_MRE[[stock]]) +
+  geom_col(aes(x = Model, y = MRE, fill = Subregion), position = "dodge") +
+   scale_fill_manual(values = myColors, name = "Subregion") +
+  labs(title = paste0(stock_names[stock], " - MRE calculated with POA transformed results with all data \nfor RE & VAST compared to survey data"))
+
+ggsave(filename = paste0(stock_folder_names[stock], "_POA_MRE_RE_v_VAST.png"), plot = plot, path = here("Plots/metrics"))
+}
+
+# Calculating MASE for RE results of resampled datasets
+RE_MRE_resampled <- list()
+for (stock in 1:N_stock) {
+  year_list <- list()
+  for (year in 1:length(survey_years[[stock]]$EASTERN)) {
+    year_list[[year]] <- sapply(subregion, function(x) {
+      MRE_v2_fun(RE_POA_resampled[[stock]][[year]][, c(x, "Year")], survey_data_POA[[stock]][, c(x, "Year")])
+    })
+    year_list[[year]] <- stack(year_list[[year]])
+    colnames(year_list[[year]]) <- c("MRE", "Subregion")
+  }
+  names(year_list) <- names(RE_POA_resampled[[stock]])
+  RE_MRE_resampled[[stock]] <- bind_rows(year_list, .id = "Missing_year")
+}
+names(RE_MRE_resampled) <- stock_folder_names
+
+# Custom colors for plotting
+myColors <- brewer.pal(3, "Dark2")
+names(myColors) <- subregion
+
+# Plotting MASEs for RE results with resampled datasets
+for(stock in 1:N_stock) {
+  plot1 <- ggplot(data = RE_MRE_resampled[[stock]]) +
+  geom_col(aes(x = Missing_year, y = MRE, fill = Subregion), position = "dodge") +
+   scale_fill_manual(values = myColors, name = "Subregion") +
+  labs(title = paste0(stock_names[stock], " - MRE calculated with POA transformed results with \nresampled datasets for RE compared to survey data")) +
+  xlab("Year extracted in resampled dataset") +
+  theme(legend.position = "bottom")
+
+ggsave(filename = paste0(stock_folder_names[stock], "_POA_MRE_RE_resampled_v1.png"), plot = plot1, path = here("Plots/metrics"))
+  
+# Alternate plot of the above
+plot2 <- ggplot(data = RE_MRE_resampled[[stock]]) +
+  geom_col(aes(x = Missing_year, y = MRE, fill = Subregion), position = "dodge") +
+  facet_grid(rows = vars(Subregion), scales = "free") +
+   scale_fill_manual(values = myColors, name = "Subregion") +
+  labs(title = paste0(stock_names[stock], " - MRE calculated with POA transformed results with \nresampled datasets for RE compared to survey data")) +
+  xlab("Year extracted in resampled dataset") +
+  theme(legend.position = "none")
+
+ggsave(filename = paste0(stock_folder_names[stock], "_POA_MRE_RE_resampled_v2.png"), plot = plot2, path = here("Plots/metrics"))
+}
+
+```
+
+
+### Metric Option 4: Coefficient of Variance
+
+As one of the original stated purposes for trying out VAST as opposed to the RE model was to decrease the variance of the biomass estimates, it makes sense that it would be good to actually quantify this and include it as one of the model evaluation metrics. The coefficient of variance is intended for that exact purpose, although there may be others (research this), and it generally looks like this:
+
+$$
+\text{COV} = \frac{\sigma}{\mu}
+$$
+
+Should this be per subregion? So use $\sigma_s$ and $\mu_s$? Then compare the COV of each subregion to each other for the 2 models?
+
+```{r COV}
+
+# Still not sure how to do this in this instance, but for now, I'm using the calculated proportion of area as the mean and the proportion SE as standard deviation
+
+CV_fun <- function(mean, sd) {
+  CV <- sd/mean
+  return(CV)
+}
+
+# CV_resampled_fun <- function(resampled_mean, 
+#                    resampled_sd,
+#                    year) {
+#   mean <- vector()
+#   sd <- vector()
+#   # Separating out POA and POA SE for the missing year for each subregion 
+#   for (sub in 1:N_sub) {
+#     mean[sub] <- resampled_mean[resampled_mean$Year == year, sub]
+#     sd[sub] <- resampled_sd[resampled_sd$Year == year, sub]
+#   }
+#   CV <- sd/mean
+#   return(CV)
+# }
+
+
+
+# Calculate CV for full data set results
+# RE
+RE_POA_CV <- list()
+for(stock in 1:N_stock) {
+  CV_df <- as.data.frame(matrix(NA, nrow = length(c(start_years[stock]:end_years[stock])), ncol = 3))
+    for(sub in 1:N_sub) {
+      CV_df[, sub] <- CV_fun(RE_POA[[stock]][, sub], 
+                             RE_prop_SEs[[stock]][, sub])
+      colnames(CV_df) <- subregion
+    }
+    CV_df$Year <- c(start_years[stock]:end_years[stock])
+    RE_POA_CV[[stock]] <- CV_df
+}
+names(RE_POA_CV) <- stock_folder_names
+
+# VAST
+VAST_POA_CV <- list()
+for(stock in 1:N_stock) {
+  CV_df <- as.data.frame(matrix(NA, nrow = length(survey_years[[stock]][[1]]), ncol = 3))
+  for(sub in 1:N_sub) {
+    CV_df[, sub] <- CV_fun(VAST_POA[[stock]][, sub], VAST_prop_SEs[[stock]][, sub])
+      colnames(CV_df) <- subregion
+    }
+  CV_df$Year <- survey_years[[stock]][[1]]
+  VAST_POA_CV[[stock]] <- CV_df
+}
+names(VAST_POA_CV) <- stock_folder_names
+  
+
+
+# Calculating CV for RE resampled results
+RE_resampled_POA_CV <- list()
+for(stock in 1:N_stock) {
+  # year_list <- list()
+  years <- survey_years[[stock]][[3]]
+  CV_df <- as.data.frame(matrix(NA, nrow = length(years), ncol = length(subregion)))
+  colnames(CV_df) <- subregion
+  for(year in 1:length(years)) {
+    POA <- RE_POA_resampled[[stock]][[year]][RE_POA_resampled[[stock]][[year]]$Year %in% years, ]
+    SE <- RE_resampled_prop_SE[[stock]][[year]][RE_resampled_prop_SE[[stock]][[year]]$Year %in% years, ]
+    # Calculate CV for those missing years
+    CV_df[year, ] <- CV_fun(POA[POA$Year == years[year], c(1:3)], SE[SE$Year == years[year], c(1:3)])
+    CV_df$Year <- years
+    # year_list[[year]] <- CV_df
+  }
+  # names(year_list) <- paste0("X", survey_years[[stock]][[3]])
+  RE_resampled_POA_CV[[stock]] <- CV_df
+}
+names(RE_resampled_POA_CV) <- stock_folder_names
+
+# Calculating CV for VAST resampled results
+VAST_resampled_POA_CV <- list()
+for(stock in 1:1) {
+  years <- survey_years[[stock]][[3]]
+  CV_df <- as.data.frame(matrix(NA, nrow = length(years), ncol = length(subregion)))
+  colnames(CV_df) <- subregion
+  for(year in 1:length(years)) {
+    POA <- VAST_POA_resampled[[stock]][[year]][VAST_POA_resampled[[stock]][[year]]$Year %in% years, ]
+    SE <- VAST_resampled_prop_SE[[stock]][[year]][VAST_resampled_prop_SE[[stock]][[year]]$Year %in% years, ]
+    # Calculate CV for those missing years
+    CV_df[year, ] <- CV_fun(POA[POA$Year == years[year], c(1:3)], SE[SE$Year == years[year], c(1:3)])
+    CV_df$Year <- years
+  }
+  VAST_resampled_POA_CV[[stock]] <- CV_df
+}
+names(VAST_resampled_POA_CV) <- stock_folder_names[1]
+
+# Plot CV comparatively
+## Combining a set of comparable RE and VAST CVs
+for(stock in 1:N_stock) {
+  plot_data <- rbind(RE_POA_CV[[stock]][RE_POA_CV[[stock]]$Year %in% survey_years[[stock]][[1]],], VAST_POA_CV[[stock]])
+plot_data$model <- c(rep("RW", length(survey_years[[stock]][[1]])), rep("VAST", length(survey_years[[stock]][[1]])))
+
+for(sub in 1:N_sub) {
+  plot <- ggplot(plot_data) +
+  geom_bar(aes(x = Year, y = get(subregion[sub]), fill = model), stat = "identity", position = position_dodge()) +
+  geom_bar(aes(x = Year, y = get(subregion[sub]), fill = model), stat = "identity", position = position_dodge()) +
+  scale_fill_manual(values = model_colors[c(1:2)], name = "") +
+  theme_bw() +
+  labs(title = paste0(stock_names[stock], " - RW vs VAST for ", subregion[sub]), y = "CV")
+  
+  ggsave(filename = paste0(stock_folder_names[stock], "_", subregion[sub], "_CV_comparison.png"), plot = plot, path = here("Plots/metrics"))
+  }
+}
+
+## Plotting the distributions of CVs 
+
+# RE vs VAST
+RE_CV_melted <- melt(RE_resampled_POA_CV$Sebastes_alutus, id.vars = "Year")
+colnames(RE_CV_melted) <- c("Year", "Subregion", "CV")
+RE_CV_melted$model_type <- "RW"
+VAST_CV_melted <- melt(VAST_resampled_POA_CV$Sebastes_alutus, id.vars = "Year")
+colnames(VAST_CV_melted) <- c("Year", "Subregion", "CV")
+VAST_CV_melted$model_type <- "delta-GLMM"
+all_CV <- rbind(RE_CV_melted, VAST_CV_melted)
+
+## CVs for all subregions compared 
+# Using histograms
+plot <- ggplot(data = all_CV, aes(x = CV, fill = model_type)) + 
+  geom_histogram(alpha = 0.4, position = "identity", bins = 20) +
+  facet_wrap(vars(Subregion)) +
+  scale_fill_manual(values = c("RW" = "blue", "delta-GLMM" = "red")) +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  labs(title = stock_names[1], x = "CV", y = "", fill = "Model")
+
+ggsave(filename = paste0(stock_folder_names[1], "_CV_comparison_hist.png"), plot = plot, path = here("Plots/metrics"))
+
+
+# Using boxplots
+plot <- ggplot(data = all_CV, aes(y = CV, x = model_type, fill = Subregion)) + 
+  geom_boxplot() +
+  scale_fill_manual(values = subregion_colors) +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  labs(title = stock_names[1], x = "Model")
+
+ggsave(filename = paste0(stock_folder_names[1], "_CV_comparison_boxplot.png"), plot = plot, path = here("Plots/metrics"))
+  
+
+### Calculate mean CV for POP in each subregion for RE & VAST
+## RE
+RE_mean_CV <- as.data.frame(matrix(NA, nrow = N_stock, ncol = N_sub,
+                                         dimnames = list(stock_folder_names, subregion)))
+for(stock in 1:N_stock) {
+  for(sub in 1:N_sub) {
+    RE_mean_CV[stock, sub] <- sum(RE_resampled_POA_CV[[stock]][, sub])/nrow(RE_resampled_POA_CV[[stock]])
+  }
+}
+
+## VAST
+VAST_mean_CV <- as.data.frame(matrix(NA, nrow = N_stock, ncol = N_sub,
+                                         dimnames = list(stock_folder_names, subregion)))
+for(stock in 1:1) {
+  for(sub in 1:N_sub) {
+    VAST_mean_CV[stock, sub] <- sum(VAST_resampled_POA_CV[[stock]][, sub])/nrow(VAST_resampled_POA_CV[[stock]])
+  }
+}
+
+### Plotting CVs for all data compared to corresponding missing year
+### for RE data (checking something...)
+RE_CV_comparison <- list()
+for(stock in 1:N_stock) {
+  years <- survey_years[[stock]][[3]]
+  # Separate out CVs with all data for survey years (except 2001)
+  CV_all <- RE_POA_CV[[stock]][RE_POA_CV[[stock]]$Year %in% years, ]
+  CV_combined <- rbind(CV_all, RE_resampled_POA_CV[[stock]])
+  CV_combined$source <- c(rep("all_data", length(years)), rep("missing_year", length(years)))
+  # Melting into long format for plotting
+  RE_CV_comparison[[stock]] <-  melt(CV_combined, id.vars = c("Year", "source"))
+  colnames(RE_CV_comparison[[stock]])[3:4] <- c("Subregion", "CV")
+}
+names(RE_CV_comparison) <- stock_folder_names
+
+# Plotting CV comparison with RE
+ggplot(data = RE_CV_comparison[[2]]) +
+  geom_point(aes(x = Year, y = CV, color = source)) +
+  geom_line(aes(x = Year, y = CV, color = source)) +
+  facet_wrap(vars(Subregion), scales = "free_y")
+
+
+# Plotting the difference between all data and missing year CVs
+CV_diff <- list()
+for(stock in 1:N_stock) {
+  years <- survey_years[[stock]][[3]]
+  diff_df <- as.data.frame(matrix(NA, nrow = length(years), ncol = 3))
+  colnames(diff_df) <- subregion
+  for (year in 1:length(years)) {
+    diff_df[year, ] <- abs(RE_POA_CV[[stock]][RE_POA_CV[[stock]]$Year == years[year], c(1:3)] - RE_resampled_POA_CV[[stock]][RE_resampled_POA_CV[[stock]]$Year == years[year], c(1:3)])
+  }
+  diff_df$Year <- years
+  # Melting into long format for plotting
+  diff_df <- melt(diff_df, id.vars = "Year")
+  colnames(diff_df)[2:3] <- c("Subregion", "diff_CV")
+  CV_diff[[stock]] <- diff_df
+}
+names(CV_diff) <- stock_folder_names
+
+# Plotting the difference betwee CVs (all vs missing year) with histogram
+ggplot(data = CV_diff[[2]]) +
+  geom_histogram(aes(x = diff_CV, fill = as.factor(Year))) +
+  facet_wrap(vars(Subregion), scales = "free_x")
+
+```
+
+### Metric option 5, alternative to COV: Proportional Variability (PV)
+
+This metric does not rely on using the mean and standard deviation (unlike COV), and therefore does not rely on the assumption that the data is normally distributed. For population data, this may be an invalid assumption, so I will likely use this metric instead of COV. The equation for it is:
+
+$$
+\text{PV} = \frac{1}{C} \sum_{comb} D(z_i, z_j)
+$$
+
+where
+
+$$
+D(z_i, z_j) = \frac{|z_i - z_j|}{\text{max}(z_i, z_j)} = 1 - \frac{\text{min}(z_i, z_j)}{\text{max}(z_i, z_j)}
+$$
+
+$z_i$ = non-negative data point i from data set
+
+$n$ = number of data points in data set
+
+$C$ = $\frac{n(n-1)}{2}$; this is the number of unique pairwise combinations of ($z_i, z_j$)
+
+```{r PV}
+
+PV_fun <- function(data) {
+  n <- length(data)
+  C <- (n*(n-1))/2
+  PV <- vector()
+  
+  # Create all combinations of pairs of biomass numbers 
+  combined_pairs <- combn(data, 2)
+  
+  for(i in 1:C) {
+    PV <- (1/C)*(1 - sum((min(combined_pairs[1, i], combined_pairs[2, i])/max(combined_pairs[1, i], combined_pairs[2, i]))))
+  }
+  
+  return(PV)
+}
+
+
+
+```
+
+
+#### Comparing prediction for 2020
+
+```{r 2020_predictions}
+
+# Importing VASt results with 2020 predictions (RE 2019 can be compared, since they use the most recent year as that year's prediction in practice)
+
+VAST_results_pred <- list()
+for (stock in 1:N_stock) { 
+  Table_SS3_data <- read.csv(paste0("/Users/kellymistry/Desktop/Raw Data/NOAA/groundfish_VAST/results/", stock_folder_names[stock], "/Gamma/", beta_num, "/predicting_2020/Plots/Table_for_SS3.csv")) 
+  # Change the automatic column name for subregions
+  colnames(Table_SS3_data)[3] <- "Subregion"
+  # Change automatic numeric values to subregion names
+  for(sub in 1:N_sub) {
+    Table_SS3_data$Subregion[Table_SS3_data$Subregion == sub] <- subregion[sub]
+  }
+  # Setting specific order of subregion factor levels (for plotting)
+  Table_SS3_data$Subregion <- factor(Table_SS3_data$Subregion, levels = subregion)
+  # Deleting rows with NAs (non-survey years)
+  Table_SS3_data <- na.omit(Table_SS3_data)
+  
+  # Saving results dataframe to list
+  VAST_results_pred[[stock]] <- Table_SS3_data
+}
+names(VAST_results_pred) <- stock_folder_names
+
+# Converting the above in POA to compare to RE
+VAST_pred_POA <- list()
+for (stock in 1:N_stock) {
+  VAST_pred_POA[[stock]] <- POA_and_SE_fun(VAST_results_pred[[stock]], 
+                               model_type = "VAST")
+  VAST_pred_POA[[stock]]$data_type = "delta-GLMM results"
+}
+names(VAST_pred_POA) <- stock_folder_names
+
+## Creating RE results version with a 2020 (by copying 2019 values)
+RE_pred_POA <- list()
+for(stock in 1:N_stock) {
+  RE_2020 <- RE_POA[[stock]][RE_POA[[stock]]$Year == 2019,]
+RE_2020$Year <- rep(2020, 3)
+RE_pred_POA[[stock]] <-  rbind(RE_POA[[stock]], RE_2020)
+RE_pred_POA[[stock]]$data_type = "RW results"
+}
+names(RE_pred_POA) <- stock_folder_names
+
+Combined_pred_POA_long <- rbind(melt(RE_pred_POA, id.vars = colnames(RE_pred_POA[[1]])), melt(VAST_pred_POA, id.vars = colnames(VAST_pred_POA[[1]])))
+colnames(Combined_pred_POA_long)[6] <- "Species"
+
+for(i in 1:nrow(Combined_pred_POA_long)) {
+    Combined_pred_POA_long$POA_LCI[i] <- max((Combined_pred_POA_long$POA - 2*Combined_pred_POA_long$SE)[i], 0)
+    Combined_pred_POA_long$POA_UCI[i] <- min((Combined_pred_POA_long$POA + 2*Combined_pred_POA_long$SE)[i], 1)
+  }
+
+# gray segments for predicted segments (2020 - 2022)
+pred_segment <- as.data.frame(matrix(NA, nrow = 3, ncol = 4), dimnames = list(subregion, stock_names))
+
+
+plot <- ggplot(Combined_pred_POA_long) +
+    geom_point(aes(x = Year, y = POA, color = data_type), position = position_dodge(width = 0.3)) +
+    geom_line(aes(x = Year, y = POA, color = data_type), position = position_dodge(width = 0.3)) +
+    geom_errorbar(aes(x = Year, y = POA, ymin = POA_LCI, ymax = POA_UCI, color = data_type), position = position_dodge(width = 0.3)) +
+    # geom_rect(aes(xmin = 2020, xmax = Inf, ymin = 0, ymax = 0.2), fill = "gray", alpha = 0.1) +
+    geom_segment(data = ) +
+    facet_wrap(Species ~ Subregion, scales = "free", ncol = 3,
+             labeller = labeller(Species = species_names)) +
+    scale_colour_manual(values = model_colors, name = "") +
+    labs(title = "", y = "Proportion of Area") +
+    theme_bw() +
+    theme(legend.position = "bottom")
+
+### Comparing the 2020 predictions (both POA and SE) in a table
+model_preds_2020 <- Combined_pred_POA_long[Combined_pred_POA_long$Year == 2020, -c(7,8)]
+model_preds_2020$POA <- round(model_preds_2020$POA, 4)
+model_preds_2020$SE <- round(model_preds_2020$SE, 4)
+
+
+
+```
+### Data Exploration
+
+For the simulations I'm making a lot of semi-arbitrary choices, so it would be good to use the dataset that I have to inform that 
+
+Questions are:
+* What is the average value for areaswept_km2 for each species (and how much variation is there, just for context, but theoretically since this is a survey they should be trying to get this to be a pretty uniform value, I think)
+* What is the proportion of zeros in any given year of hauls for each species (my current choice is that at least 2/3 of the hauls will have 0 catch, so this would be to see if that's semi-reasonable)
+* What type of distribution would mirror positive catch for these two species (I'd rather not do this and keep the catches at 1, but if I have to, this info will come in handy)
+
+
+
+Separated_stock_data has the data formatted for RW, and GOA_raw_data_list has the data formatted for VAST
+
+
+```{r data_exploration}
+
+
+## AreaSwept_km2 
+# For POP:
+hist(GOA_raw_data_list[[1]]$AreaSwept_km2)
+mean(GOA_raw_data_list[[1]]$AreaSwept_km2) # 0.02666987
+sd(GOA_raw_data_list[[1]]$AreaSwept_km2) # 0.00719051
+# For NR
+:
+hist(GOA_raw_data_list[[2]]$AreaSwept_km2)
+mean(GOA_raw_data_list[[2]]$AreaSwept_km2) # 0.03186213
+sd(GOA_raw_data_list[[2]]$AreaSwept_km2) # 0.01876931
+
+## I could pick 0.03 for the simulations and probably leave it at that, I think
+
+## Proportion of hauls with 0s to non-0 catches
+# For POP, in each year:
+# Isolating all 0 catches
+zero_data <- GOA_raw_data_list[[1]][which(GOA_raw_data_list[[1]]$Catch_KG == 0),]
+# Setting up vectors to count total catches & total 0 catches in each year
+total_catches_per_year <- vector()
+num_zeros_per_year <- vector()
+# Loop to count total catch & number of zeroes in each year
+for(year in 1:length(survey_years[[1]][[1]])) {
+  total_catches_per_year[year] <- nrow(GOA_raw_data_list[[1]][GOA_raw_data_list[[1]]$Year == survey_years[[1]][[1]][year],])
+  num_zeros_per_year[year] <- nrow(zero_data[zero_data$Year == survey_years[[1]][[1]][year],])
+}
+# Combining vectors and survey years
+year_catches <- as.data.frame(cbind(survey_years[[1]][[1]],total_catches_per_year, num_zeros_per_year))
+# Calculating the proportion of zeros compared to total catch per year
+year_catches$zero_proportion <- year_catches$num_zeros_per_year/year_catches$total_catches_per_year
+mean(year_catches$zero_proportion) # 0.5635539
+sd(year_catches$zero_proportion) # 0.05569814
+
+# For NR:
+# Isolating all 0 catches
+zero_data <- GOA_raw_data_list[[2]][which(GOA_raw_data_list[[2]]$Catch_KG == 0),]
+# Setting up vectors to count total catches & total 0 catches in each year
+total_catches_per_year <- vector()
+num_zeros_per_year <- vector()
+# Loop to count total catch & number of zeroes in each year
+for(year in 1:length(survey_years[[2]][[1]])) {
+  total_catches_per_year[year] <- nrow(GOA_raw_data_list[[2]][GOA_raw_data_list[[2]]$Year == survey_years[[2]][[1]][year],])
+  num_zeros_per_year[year] <- nrow(zero_data[zero_data$Year == survey_years[[2]][[1]][year],])
+}
+# Combining vectors and survey years
+year_catches <- as.data.frame(cbind(survey_years[[2]][[1]],total_catches_per_year, num_zeros_per_year))
+# Calculating the proportion of zeros compared to total catch per year
+year_catches$zero_proportion <- year_catches$num_zeros_per_year/year_catches$total_catches_per_year
+mean(year_catches$zero_proportion) # 0.8295072
+sd(year_catches$zero_proportion) # 0.03286114
+
+# Based on the above, I think having a minimum of 66% of catches be 0 seems fairly reasonable, as its pretty close to halfway between the proportion of 0s for the two species here. I think I'll stick with that then (so 300 total hauls if 100 fish exist)
+
+## Distribution of positive catch
+# For POP:
+positive_catch_data <- GOA_raw_data_list[[1]][which(GOA_raw_data_list[[1]]$Catch_KG != 0),]
+mean(positive_catch_data$Catch_KG) # 213.7896
+sd(positive_catch_data$Catch_KG) # 775.2566
+ggplot(positive_catch_data) +
+  geom_boxplot(aes(x = as.character(Year), y = Catch_KG))
+
+# POP has big outlier catches in most years, with the majority being fairly small (mean of 213 mt)
+
+# For NR:
+positive_catch_data <- GOA_raw_data_list[[2]][which(GOA_raw_data_list[[2]]$Catch_KG != 0),]
+mean(positive_catch_data$Catch_KG) # 105.6992
+sd(positive_catch_data$Catch_KG) # 550.3685
+ggplot(positive_catch_data) +
+  geom_boxplot(aes(x = as.character(Year), y = Catch_KG))
+
+# NR is similar, characterized by few big catches in any given year (some of which are HUGE comparatively), with the majority of catch being fairly small (mean is only 105 mt)
+
+# As for the distribution to use, maybe gamma? But it could allow for 0 values to be picked, so not immediately sure how to do that.
+
+
+```
+
+
+### Comparing epsilons = 0 and epsilons = 2 results (with all data)
+
+
+```{r epsilons_comparison}
+
+# Setting up paths to results files
+result_folders <- vector()
+for(stock in 1:N_stock) {
+  result_folders[stock] <- paste0("/Users/kellymistry/Desktop/Raw Data/NOAA/groundfish_VAST/results/", stock_folder_names[stock], "/Gamma/beta_2s/epsilons_2")
+}
+output_file <- "Index.csv"
+
+# Setting up list of subregion designations used in the VAST output
+subregion_des <- paste0("Stratum_", 1:3)
+
+# Setting legend colors
+comp_colors <- c("red", "black")
+names(comp_colors) <- c("epsilons 2", "epsilons 0")
+
+VAST_eps2_results <- list()
+for(stock in 1:N_stock) {
+  VAST_eps2_results[[stock]] <- VAST_import_fun(result_folders[stock], output_file, subregion_des)
+  # Manually excluding non-survey years (since this version returned 0s for that instead of NAs)
+  VAST_eps2_results[[stock]] <- VAST_eps2_results[[stock]][VAST_eps2_results[[stock]]$Time %in% survey_years[[stock]][[1]],]
+}
+names(VAST_eps2_results) <- stock_folder_names
+
+
+## Plotting epsilons = 2, betas = 2 with epsilons = 0, betas = (2,1) for POP
+plot_SA <- ggplot() +
+  geom_pointrange(data = VAST_eps2_results[[1]], aes(x = Time, y = Estimate, ymin = Estimate-1.96*Std..Error.for.Estimate, 
+                      ymax = Estimate+1.96*Std..Error.for.Estimate, 
+                      color = "epsilons 2")) +
+  geom_pointrange(data = VAST_results_all[[1]], aes(x = Year, y = Estimate_metric_tons, ymin = Estimate_metric_tons-1.96*SD_mt, 
+                      ymax = Estimate_metric_tons+1.96*SD_mt, 
+                      color = "epsilons 0")) +
+  # geom_point(data = VAST_eps2_results[[1]], aes(x = Time, y = Estimate, color = "epsilons 2")) +
+  # geom_path(data = VAST_eps2_results[[1]], aes(x = Time, y = Estimate, color = "epsilons 2")) +
+  # geom_point(data = VAST_results_all[[1]], aes(x = Year, y = Estimate_metric_tons, color = "epsilons 0")) +
+  # geom_path(data = VAST_results_all[[1]], aes(x = Year, y = Estimate_metric_tons, color = "epsilons 0")) +
+  facet_wrap(vars(Subregion)) +
+  scale_color_manual(values = comp_colors) +
+  labs(title = paste0("Comparison of 2 VAST versions for ", stock_names[1]), y = "Estimated Biomass (mt)") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+ggsave(filename = paste0(stock_folder_names[1], "-VAST_epsilons_comparison.png"), plot = plot_SA, path = here::here("Plots"))
+
+
+## Plotting epsilons = 2, betas = 2 with epsilons = 0, betas = (2,1) for NR
+plot_SP <- ggplot() +
+  geom_pointrange(data = VAST_eps2_results[[2]], aes(x = Time, y = Estimate, ymin = Estimate-1.96*Std..Error.for.Estimate, 
+                      ymax = Estimate+1.96*Std..Error.for.Estimate, 
+                      color = "epsilons 2")) +
+  geom_pointrange(data = VAST_results_all[[2]], aes(x = Year, y = Estimate_metric_tons, ymin = Estimate_metric_tons-1.96*SD_mt, 
+                      ymax = Estimate_metric_tons+1.96*SD_mt, 
+                      color = "epsilons 0")) +
+  # geom_point(data = VAST_eps2_results[[1]], aes(x = Time, y = Estimate, color = "epsilons 2")) +
+  # geom_path(data = VAST_eps2_results[[1]], aes(x = Time, y = Estimate, color = "epsilons 2")) +
+  # geom_point(data = VAST_results_all[[1]], aes(x = Year, y = Estimate_metric_tons, color = "epsilons 0")) +
+  # geom_path(data = VAST_results_all[[1]], aes(x = Year, y = Estimate_metric_tons, color = "epsilons 0")) +
+  facet_wrap(vars(Subregion)) +
+  scale_color_manual(values = comp_colors) +
+  labs(title = paste0("Comparison of 2 VAST versions for ", stock_names[2]), y = "Estimated Biomass (mt)") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+ggsave(filename = paste0(stock_folder_names[2], "-VAST_epsilons_comparison.png"), plot = plot_SP, path = here::here("Plots"))
+```

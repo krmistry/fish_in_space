@@ -1,0 +1,245 @@
+---
+title: "VAST Beta Settings comparison"
+author: "Kelly Mistry"
+date: "3/16/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(here)
+library(dplyr)
+library(tidyr)
+library(R.utils)
+library(reshape2)
+library(ggplot2)
+library(RColorBrewer)
+```
+
+## Comparing VAST results with different beta settings with POP data
+
+Options for beta settings that I tried:
+
+-   both betas = 4 (AR1 process for both encounter probability & positive catch temporal coefficients)
+
+-   both betas = 2 (random walk process for both encounter probability & positive catch temporal coefficients)
+
+-   beta 1 = 2, beta 2 = 1 (encounter probability has random walk process, positive catch as fixed intercept temporal coefficients)
+
+```{r data_importing}
+
+# Importing functions from VAST and RE model projects 
+source("/Users/kellymistry/Desktop/Raw Data/NOAA/RE_model_v2/scripts/functions.R")
+source("/Users/kellymistry/Desktop/Raw Data/NOAA/groundfish_VAST/scripts/01_functions.R")
+
+## Setting up species, year and subregion objects
+# species
+stock_names <- c("Pacific Ocean Perch" = "Sebastes alutus",
+                 "Northern Rockfish" = "Sebastes polyspinis")
+#   "Atka Mackerel" = "Pleurogrammus monopterygius")
+my_stock_ids <- c("30060",
+                  "30420")
+#"21921")
+names(my_stock_ids) <- stock_names
+stock_folder_names <- sub(" ", "_", stock_names)
+
+# Species-specific start and end years
+start_years <- c(1990, 
+                 1984) 
+# 1984)
+names(start_years) = stock_names
+end_years <- c(2019,
+               2019)
+# 2019)
+names(end_years) = stock_names
+
+# subregions
+subregion <- c("WESTERN", "CENTRAL", "EASTERN")
+
+# Number of stocks and subregions
+N_stock <- length(stock_names)
+N_sub <- length(subregion)
+
+## Import original data sets
+# Data set with summarized estimates for each subregion in each year (used with RE model)
+GOA_indices_data <- read.csv("/Users/kellymistry/Desktop/Raw Data/NOAA/RE_model_v2/data/BIOMASS_AREA_DATA_TABLE.csv")
+# Raw data (used in VAST model), with all of the hauls in each year
+GOA_haul_data <- read.csv("/Users/kellymistry/Desktop/Raw Data/NOAA/groundfish_VAST/data/haul.csv")
+GOA_CPUE_data <- read.csv("/Users/kellymistry/Desktop/Raw Data/NOAA/groundfish_VAST/data/CPUE.csv")
+# Filtering raw data by species and years
+GOA_raw_data_list <- list()
+for (stock in 1:N_stock) {
+  GOA_raw_data_list[[stock]] <- filter_create_VAST_input(GOA_CPUE_data, 
+                                                         my_stock_ids, 
+                                                         stock_names[stock],
+                                                         start_years[stock],
+                                                         GOA_haul_data)
+  # Checking for NAs in the AreaSwept_km2 column (variable necessary for
+  # calculating CPUE, so NA values will cause code to fail)
+  if(sum(is.na(GOA_raw_data_list[[stock]][, "AreaSwept_km2"])) > 0) {
+    deleted_rows <- which(is.na(GOA_raw_data_list[[stock]][, "AreaSwept_km2"]) == TRUE)
+    if (length(deleted_rows) < 10 && length(deleted_rows) > 0) {
+      GOA_raw_data_list[[stock]] <- GOA_raw_data_list[[stock]][-c(deleted_rows),]
+    } else if (length(deleted_rows) > 10) {
+      stop("More than 10 NAs in AreaSwept_km2 column in Data_Geostat") #it might be important to look at why there might be a lot of NAs before deciding to get rid of the rows
+    }
+  }
+  # Adding a column with the subregion for each haul location
+  for (i in 1:nrow(GOA_raw_data_list[[stock]])) {
+    if (GOA_raw_data_list[[stock]]$Lon[i] <= -157) {
+      GOA_raw_data_list[[stock]]$Subregion[i] <-  subregion[1] 
+    } else if (GOA_raw_data_list[[stock]]$Lon[i] > -157 && GOA_raw_data_list[[stock]]$Lon[i] <= -147) {
+      GOA_raw_data_list[[stock]]$Subregion[i] <-  subregion[2] 
+    } else {
+      GOA_raw_data_list[[stock]]$Subregion[i] <- subregion[3]
+    }
+  }
+}
+names(GOA_raw_data_list) <- sub(" ", "_", stock_names)
+
+
+# Creating list of data frames for each subregion for each species (6 total)
+separated_stock_data <- list()
+
+for (stock in 1:N_stock) {
+  separated_stock_data[[stock]] <- lapply(subregion, function(sub) {
+    initial_set_up_fun(GOA_indices_data, 
+                       stock_names[stock], 
+                       start_years[stock], 
+                       sub)
+  })
+  names(separated_stock_data[[stock]]) <- subregion
+}
+names(separated_stock_data) <- stock_folder_names
+
+# Recording survey years for each species
+survey_years <- list()
+for(stock in 1:N_stock) {
+  survey_years[[stock]] <- lapply(subregion, function(sub) {
+    separated_stock_data[[stock]][[sub]]$YEAR
+  })
+  names(survey_years[[stock]]) <- subregion
+}
+
+names(survey_years) <- stock_folder_names
+
+
+```
+
+```{r VAST_results}
+
+# Beta setting options
+beta_list <- c("beta_2s", "beta_2_1","beta_4s")
+N_betas <- length(beta_list)
+
+# Create list to hold beta setting VAST results dataframes for results with no missing years
+VAST_results_all <- list()
+for (beta in 1:N_betas) { 
+  # Importing the Table_for_SS3.csv VAST output, which has the bias-corrected 
+  # results, and is the model results that should be used in the below calculations
+  Table_SS3_data <- read.csv(paste0("/Users/kellymistry/Desktop/Raw Data/NOAA/groundfish_VAST/results/", 
+                                    stock_folder_names[1], "/Gamma/", 
+                                    beta_list[beta], "/Plots/Table_for_SS3.csv")) 
+  # Change the automatic column name for subregions
+  colnames(Table_SS3_data)[3] <- "Subregion"
+  # Change automatic numeric values to subregion names
+  for(sub in 1:N_sub) {
+    Table_SS3_data$Subregion[Table_SS3_data$Subregion == sub] <- subregion[sub]
+  }
+  # Setting specific order of subregion factor levels (for plotting)
+  Table_SS3_data$Subregion <- factor(Table_SS3_data$Subregion, levels = subregion)
+  # Deleting rows with NAs (non-survey years)
+  Table_SS3_data <- na.omit(Table_SS3_data)
+  
+  # Saving results dataframe to list
+  VAST_results_all[[beta]] <- Table_SS3_data
+}
+names(VAST_results_all) <- beta_list
+
+# Plotting the 3 versions against each other
+
+plot <- ggplot() +
+  geom_point(data = VAST_results_all[[1]], aes(x = Year, y = Estimate_metric_tons), color = "red") +
+  geom_line(data = VAST_results_all[[1]], aes(x = Year, y = Estimate_metric_tons), color = "red") +
+  geom_point(data = VAST_results_all[[2]], aes(x = Year, y = Estimate_metric_tons), color = "blue") +
+  geom_line(data = VAST_results_all[[2]], aes(x = Year, y = Estimate_metric_tons), color = "blue") +
+  geom_point(data = VAST_results_all[[3]], aes(x = Year, y = Estimate_metric_tons), color = "black") +
+  geom_line(data = VAST_results_all[[3]], aes(x = Year, y = Estimate_metric_tons), color = "black") +
+  facet_wrap(vars(Subregion), scales = "free") +
+  theme_bw() +
+  labs(title = "Excluding years: 1996, 1999, 2005, 2009")
+
+```
+
+```{r all_vs_survey_yrs}
+
+### Compare VAST results with just survey year results vs all years (using dummy data)
+
+input_type <- c("all/catches_sampled", "just_survey", "all/catches_1")
+
+# Create list to hold VAST results dataframes
+VAST_results_inputs <- list()
+for(stock in 1:1) {
+  Stock_results <- list()
+  for (i in 1:length(input_type)) { 
+  # Importing the Table_for_SS3.csv VAST output, which has the bias-corrected 
+  # results, and is the model results that should be used in the below calculations
+  Table_SS3_data <- read.csv(paste0("/Users/kellymistry/Desktop/Raw Data/NOAA/groundfish_VAST/results/", 
+                                    stock_folder_names[stock], "/Gamma/beta_2_1/", 
+                                    input_type[i], "/Plots/Table_for_SS3.csv")) 
+  # Change the automatic column name for subregions
+  colnames(Table_SS3_data)[3] <- "Subregion"
+  # Change automatic numeric values to subregion names
+  for(sub in 1:N_sub) {
+    Table_SS3_data$Subregion[Table_SS3_data$Subregion == sub] <- subregion[sub]
+  }
+  # Setting specific order of subregion factor levels (for plotting)
+  Table_SS3_data$Subregion <- factor(Table_SS3_data$Subregion, levels = subregion)
+  # Deleting rows with NAs (non-survey years)
+  Table_SS3_data <- na.omit(Table_SS3_data)
+  
+  # Saving results dataframe to list
+  Stock_results[[i]] <- Table_SS3_data
+  }
+  names(Stock_results) <- input_type
+  VAST_results_inputs[[stock]] <- Stock_results
+}
+names(VAST_results_inputs) <- stock_folder_names[1]
+
+# Plotting all vs survey year results
+
+ggplot() +
+  geom_point(data = VAST_results_inputs$Sebastes_alutus[[1]], aes(x = Year, y = Estimate_metric_tons), color = "red") +
+  geom_line(data = VAST_results_inputs$Sebastes_alutus[[1]], aes(x = Year, y = Estimate_metric_tons), color = "red") +
+  geom_point(data = VAST_results_inputs$Sebastes_alutus[[2]], aes(x = Year, y = Estimate_metric_tons), color = "blue") +
+  geom_line(data = VAST_results_inputs$Sebastes_alutus[[2]], aes(x = Year, y = Estimate_metric_tons), color = "blue") +
+  geom_point(data = VAST_results_inputs$Sebastes_alutus[[3]], aes(x = Year, y = Estimate_metric_tons), color = "black") +
+  geom_line(data = VAST_results_inputs$Sebastes_alutus[[3]], aes(x = Year, y = Estimate_metric_tons), color = "black") +
+  facet_wrap(vars(Subregion), scales = "free")
+
+
+
+# Creating list with just survey data and data with dummy years from new VAST results, melted so species and subregions can both be faceted
+VAST_comparison <- list("just_survey" = VAST_results_all, "all_years" = VAST_all_yrs)
+VAST_comparison$just_survey <- melt(VAST_comparison$just_survey, id.vars = colnames(VAST_comparison$just_survey[[1]]))
+colnames(VAST_comparison$just_survey)[8] <- "Species"
+VAST_comparison$all_years <- melt(VAST_comparison$all_years, id.vars = colnames(VAST_comparison$all_years[[1]]))
+colnames(VAST_comparison$all_years)[8] <- "Species"
+
+# Plotting all vs survey year results
+colors <- c("all years" = "red", "just survey years" = "black")
+
+plot <- ggplot() +
+  geom_point(data = VAST_comparison$all_years, aes(x = Year, y = Biomass), color = "red") +
+  geom_line(data = VAST_comparison$all_years, aes(x = Year, y = Biomass), color = "red") +
+  geom_point(data = VAST_comparison$just_survey, aes(x = Year, y = Biomass, color = "just survey years")) +
+  geom_line(data = VAST_comparison$just_survey, aes(x = Year, y = Biomass), color = "black") +
+  facet_wrap(Species ~ Subregion, scales = "free") +
+  scale_color_manual(values = colors)
+  
+ggsave(filename = "just_survey_vs_dummy_data_new-VAST.png", 
+        plot = plot, path = here("Plots/betas_2"))
+
+
+```
