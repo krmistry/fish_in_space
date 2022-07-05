@@ -1,6 +1,6 @@
-# Set up vectors of results & result plots folder names
+# Set up vectors of results & result plots folder names for runs with survey years
 initial_results_folders <- results_folder_fun(here("results"), 
-                                              stock_names)
+                                              stock_folder_names)
 initial_plots_folders <- paste0(initial_results_folders, "Plots/")
 
 # Check for the existence of results folders and create if necessary
@@ -12,6 +12,20 @@ for(folder in 1:length(initial_plots_folders)) {
   }
 }
 
+# Set up vectors of results & result plots folder names for runs with survey years &
+# dummy data (non-survey interior years and 3 years after last survey year)
+all_years_results_folders <- paste0(results_folder_fun(here("results"), 
+                                              stock_names), "all_years/")
+all_years_plots_folders <- paste0(all_years_results_folders, "Plots/")
+
+# Check for the existence of results folders and create if necessary
+for(folder in 1:length(all_years_plots_folders)) {
+  if(!dir.exists(all_years_plots_folders[folder])) {
+    dir.create(all_years_plots_folders[folder], recursive = TRUE)
+  } else {
+    print("Directories exist")
+  }
+}
 
 ## VAST input data initial formatting
 

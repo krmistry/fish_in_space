@@ -39,3 +39,4 @@ epsilon_setting <- c(2, 2)
 
 # Set up gamma for positive catch, delta model for encounter
 dist_setting <- "Gamma"
+
