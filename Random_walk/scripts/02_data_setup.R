@@ -11,10 +11,10 @@ stock_folder_names <- sub(" ", "_", stock_names)
 # Species-specific start years & most recent survey year
 start_years <- c(1990, 
                  1984) 
-names(start_years) = stock_names
+names(start_years) <- stock_names
 end_years <- c(2019,
                2019)
-names(end_years) = stock_names
+names(end_years) <- stock_names
 
 
 # Subregion names
@@ -36,6 +36,18 @@ for (sub in subregion) {
   }
 }
 
+# Check for the existence of results folders in directory and create if necessary
+for(stock in 1:N_stock) {
+  for(sub in 1:N_sub) {
+    if(!dir.exists(results_folders[stock, sub])) {
+      dir.create(results_folders[stock, sub], recursive = TRUE)
+    } else {
+      print("Directories exist")
+    }
+  }
+}
+
+
 # Creating a list of dataframes for each species and subregion's data
 separated_stock_data <- list()
 for (stock in 1:N_stock) {
@@ -47,26 +59,24 @@ for (stock in 1:N_stock) {
   })
   names(separated_stock_data[[stock]]) <- subregion
 }
-
 names(separated_stock_data) <- stock_folder_names
+
 
 # Creating list of survey years for each species and subregion; in my data set
 # the eastern subregion wasn't surveyed in 2001 for either species, so there
 # is one less survey year
 survey_years <- list()
-for(stock in 1:N_stock) {
+for(stock in stock_folder_names) {
   survey_years[[stock]] <- lapply(subregion, function(sub) {
       separated_stock_data[[stock]][[sub]]$YEAR
   })
   names(survey_years[[stock]]) <- subregion
 }
 
-names(survey_years) <- stock_folder_names
-
 
 # Creating and saving re.dat files (input for RE model) for each subregion and each 
 # species in the appropriate results folder; for description of content of re.dat, see notes 
-# for re.dat_inputs_fun() in functions.R
+# for re.dat_inputs_fun() in 01_functions.R
 for (sub in 1:N_sub) {
   for (stock in 1:N_stock) {
     # Creating re.dat object

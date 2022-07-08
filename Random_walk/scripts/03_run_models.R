@@ -14,25 +14,37 @@ library(reshape2)
 
 # source script with custom functions and initial data set up
 source(here("scripts/functions.R"))
-source(here("scripts/data_setup.R")) # edit here to change stocks & starting years
+##### Run both models with all years and models with jackknife resampled data sets 
+##### with ADMB random walk model
+
+source(here("scripts/01_functions.R"))
+source(here("scripts/02_data_setup.R")) # edit here to change stocks & starting years
 
 
-# I may have figured out what the issue was with running these commands for the last few weeks, although it makes zero sense - I have to either source the whole .Rmd file or copy and paste the compile_admb and run_admb lines into the console, rather than using command-enter to run them piecemeal from the script editing window. No idea why it matters, but ggplots sometimes does this too, so I guess it's not unprecedented, just weird
+# Either source the whole .R file or copy and paste the following compile_admb and 
+# run_admb lines into the console (lines 27 - 43) to run, rather than using command-enter 
+# to run them from the script editing window. 
 
 ### Compile and run ADMB-RE model ###
 for(sub in 1:N_sub) {
   for(stock in 1:N_stock) {
-    # Note: can't use results_folders object inside the below functions
+    ### Note: can't use results_folders object inside the below functions (doesn't run for some reason)
     # Creating file path for re.tpl file
-    #
-    re_file <- paste0("results/", subregion[sub], "/", stock_folder_names[stock], "/re")
+    re_file <- paste0("results/", stock_folder_names[stock], "/", subregion[sub], "/re")
     # Compile re.tpl file
-    compile_admb(fn = paste0("results/", subregion[sub], "/", stock_folder_names[stock], "/re"), re = TRUE, verbose=TRUE) 
+    compile_admb(fn = paste0("results/", stock_folder_names[stock], "/", 
+                             subregion[sub], "/re"), 
+                 re = TRUE, verbose=TRUE) 
     # Run model
-    run_admb(fn = paste0("results/", subregion[sub], "/", stock_folder_names[stock], "/re"), verbose = FALSE)
-    # Several of the results files are going into the project directory rather than the appropriate subregion/species folder, so this moves them into the appropriate directories
+    run_admb(fn = paste0("results/", stock_folder_names[stock], "/", 
+                         subregion[sub], "/re"), 
+             verbose = FALSE)
+    # Several of the results files are going into the project directory rather than the 
+    # appropriate subregion/species folder, so this moves them into the appropriate 
+    # directories
     for(file in 1:length(result_files)) {
-      file.rename(here(result_files[file]), paste0(results_folders[stock, sub], "/", result_files[file]))
+      file.rename(here(result_files[file]), paste0(results_folders[stock, sub], 
+                                                   "/", result_files[file]))
     }
   }
 } 
