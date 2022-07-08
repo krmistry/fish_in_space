@@ -10,7 +10,7 @@
 ##            START_LONGITUDE
 #
 ## RETURNS
-## A dataframe with survey data for one species, including columns for year, catch by weight, 
+## Data_Geostat = A dataframe with survey data for one species, including columns for year, catch by weight, 
 ## start latitude and longitude (location of start of haul), and the area covered in the haul in km^2
 
 filter_create_VAST_input <- function(initial_data, 
@@ -44,14 +44,18 @@ filter_create_VAST_input <- function(initial_data,
 
 # Function to set Rhoconfig beta and obsmodel settings based on user choices
 ## ARGUMENTS
-## dist_setting = 
-## beta_setting = 
-## epsilon_setting = 
+## dist_setting = distribution used for observation model; Gamma in this analysis
+## beta_setting = the 2 settings dictating the temporal coefficient form for encounter 
+##                probability and positive catch 
+## epsilon_setting = the 2 settings dictating the spatiotemporal coefficient form for
+##                    encounter probability and positive catch
 ## stock = one of the species in stock_folder_names list
 ##
 ## RETURNS
-## a list with a vector of 4 named elements, 2 for temporal settings (betas) and 2 for spatiotemporal 
-## settings (epsilons), and a vector of the 2 settings for the positive catch rate distribution
+## list of 2:
+## RhoConfig = a list with a vector of 4 named elements, 2 for temporal settings (betas) and 2 for spatiotemporal 
+## settings (epsilons)
+## obsmodel = a vector of the 2 settings for the positive catch rate distribution
 
 dist_beta_setting_fun <- function(dist_setting, 
                                   beta_setting,
@@ -79,7 +83,7 @@ dist_beta_setting_fun <- function(dist_setting,
 ## stock = the species, from stock_folder_names
 ## 
 ## RETURNS
-## A single string with the name for the results folder for that species
+## results_folder = A single string with the name for the results folder for that species
 
 results_folder_fun <- function(starting_point, 
                                stock) {
