@@ -3,61 +3,41 @@ GOA_indices_data <- read.csv(here("data/BIOMASS_AREA_DATA_TABLE.csv"))
 # species 
 stock_names <- c("Pacific Ocean Perch" = "Sebastes alutus", 
                  "Northern Rockfish" = "Sebastes polyspinis") 
-                 #"Atka Mackerel" = "Pleurogrammus monopterygius")
 my_stock_ids <- c("30060", 
                   "30420") 
-                  #"21921")
 names(my_stock_ids) <- stock_names
 stock_folder_names <- sub(" ", "_", stock_names)
 
 # Species-specific start years & most recent survey year
 start_years <- c(1990, 
                  1984) 
-                 #1984)
 names(start_years) = stock_names
 end_years <- c(2019,
                2019)
-               #2019)
 names(end_years) = stock_names
 
-# # Creating a vector with the number of years each species is estimated for 
-# # (this will be useful later on, when formatting the result outputs)
-# stock_years <- sapply(c(1,2), function(x) {
-#   end_years[x] - start_years[x] + 1
-# })
-# names(stock_years) <- stock_names
 
-# subregions
+# Subregion names
 subregion <- c("WESTERN", "CENTRAL", "EASTERN")
 
 # Number of stocks and number of subregions (for looping) 
 N_sub <- length(subregion)
 N_stock <- length(stock_names)
 
-# results folder names (formatted like this in order to make nested for loops work)
+# results folder names (formatted as a matrix, species in rows, subregion in columns)
 results_folders <- matrix(NA, nrow = 2, ncol = 3, 
                           dimnames = list(stock_folder_names, subregion))
 
 # Rows are for each stock, columns for subregions
-for (sub in 1:N_sub) {
-  for (stock in 1:N_stock) {
-    results_folders[stock, sub] <- paste0(here("results/"), subregion[sub], "/", stock_folder_names[stock])
+for (sub in subregion) {
+  for (stock in stock_folder_names) {
+    results_folders[stock, sub] <- paste0(here("results/"), stock, 
+                                          "/", sub)
   }
 }
 
-
-# # Creating separate data frames for each subregion for each species (6 total)
-# for(stock in 1:length(stock_names)) {
-#   for(sub in 1:length(subregion)) {
-#     assign(paste0(subregion[sub], "_", stock_folder_names[stock],"_data"),
-#            initial_set_up_fun(GOA_indices_data, stock_names[stock], start_years[stock], subregion[sub]))
-#   }
-# }
-
-# alternative method to the above nested for loops; results in a list of lists, with the 
-# upper level being by subregion and the second list by stock
+# Creating a list of dataframes for each species and subregion's data
 separated_stock_data <- list()
-
 for (stock in 1:N_stock) {
   separated_stock_data[[stock]] <- lapply(subregion, function(sub) {
     initial_set_up_fun(GOA_indices_data, 

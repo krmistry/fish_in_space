@@ -26,6 +26,36 @@ VAST_import_fun <- function(results_folder,
 }
 
 
+### Function to read the RE output object rwout.rep and format it into a usable dataframe; 
+### any value other than "0" for year returns the results when that year was excluded
+## ARGUMENTS
+## rwout_path = use dataframe created by the inital_set_up function
+## stock_name = 
+#
+## RETURNS
+## RE_results = 
+format_RE_output_fun <- function(rwout_path, 
+                                 stock_name) {
+  # Import raw results
+  raw_results <- read.delim(rwout_path)
+  # Creating dataframe for results, using column names from rwout.rep file
+  col_names <- c(unlist(filter(raw_results, row_number() %% 2 == 0)), 
+                 use.names = FALSE)[-c(1,2)]
+  RE_results <- as.data.frame(matrix(NA, 
+                                     nrow = length(seq(start_years[stock_name], 
+                                                       end_years[stock_name])), 
+                                     ncol = length(col_names)))
+  names(RE_results) <- col_names
+  # Populate dataframe with results data
+  for(i in 1:length(col_names)) {
+    row <- seq(7, nrow(raw_results), 2)[i]
+    RE_results[, i] <-  as.numeric(unlist(strsplit(raw_results[row, 1], 
+                                                   split = " "))[-1])
+  }
+  return(RE_results)
+}
+
+
 
 
 ## Function to calculate proportion of area and standard error of proportion 
