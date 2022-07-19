@@ -5,11 +5,9 @@ library(here)
 library(R2admb)
 library(PBSmodelling)
 library(dplyr)
-#library(ggplot2)
 library(filesstrings)
 library(R.utils)
 library(abind)
-#library(RColorBrewer)
 library(reshape2)
 
 # source script with custom functions and initial data set up
@@ -17,14 +15,16 @@ source(here("scripts/01_functions.R"))
 source(here("scripts/02_data_setup.R")) # edit here to change stocks & starting years
 
 
-# Either source the whole .R file or copy and paste the following compile_admb and 
-# run_admb lines into the console (lines 27 - 43) to run, rather than using command-enter 
-# to run them from the script editing window. 
+# If you have issues running the code below, either source the whole .R file or
+# copy and paste the following compile_admb and run_admb lines into the console
+# (lines 27 - 43) to run, rather than using command-enter to run them from the
+# script editing window.
 
 ### Compile and run ADMB-RE model ###
 for(sub in 1:N_sub) {
   for(stock in 1:N_stock) {
-    ### Note: can't use results_folders object inside the below functions (doesn't run for some reason)
+    ### Note: can't use results_folders object inside the below functions
+    ### (doesn't run for some reason)
     # Creating file path for re.tpl file
     re_file <- paste0("results/", stock_folder_names[stock], "/", subregion[sub], "/re")
     # Compile re.tpl file
