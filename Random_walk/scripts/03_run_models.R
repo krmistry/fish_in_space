@@ -13,10 +13,6 @@ library(abind)
 library(reshape2)
 
 # source script with custom functions and initial data set up
-source(here("scripts/functions.R"))
-##### Run both models with all years and models with jackknife resampled data sets 
-##### with ADMB random walk model
-
 source(here("scripts/01_functions.R"))
 source(here("scripts/02_data_setup.R")) # edit here to change stocks & starting years
 
@@ -50,70 +46,7 @@ for(sub in 1:N_sub) {
 } 
 
 
-# Creating new folders for the resampled results
-for(stock in 1:N_stock) {
-  for (sub in 1:N_sub) {
-    for (year in 1:length(survey_years[[stock]][[sub]])) {
-      dir.create(paste0(here("results/Resampling_results/"), stock_folder_names[stock], "/", subregion[sub],"/",  survey_years[[stock]][[sub]][year]), recursive = TRUE)
-    }
-  }
-}
 
 
-resampled_results_folders <- list()
-for (stock in 1:N_stock) {
-  stock_folders <- list()
-  for (sub in 1:N_sub) {
-    species_years <- survey_years[[stock]]
-    stock_folders[[sub]] <- lapply(species_years[[sub]], function(x) {
-      paste0(here("results/Resampling_results/"), stock_folder_names[stock], "/", subregion[sub], "/", x)
-    })
-    stock_folders[[sub]] <- unlist(stock_folders[[sub]])
-  }
-  resampled_results_folders[[stock]] <- stock_folders
-  names(stock_folders) <- subregion
-}
-names(resampled_results_folders) <- stock_folder_names 
-
-
-# Create jackknife resampled data sets, saving into appropriate folders
-for (stock in 1:N_stock) {
-  for (sub in 1:N_sub) {
-    for (year in 1:length(survey_years[[stock]][sub])) {
-      # Exclude one year of data from the dataset
-      jackknifed_data <- separated_stock_data[[stock]][[sub]][-year,]
-      # Formatting the data into the re.dat required format
-      re.dat <- re.dat_inputs_fun(jackknifed_data, unname(start_years[stock]), unname(end_years[stock]))
-      # Writing re.dat into the appropraite folder
-      write_dat(paste0(resampled_results_folders[[stock]][[sub]][[year]], "/re"),
-                L = re.dat)
-      # Copy re.tpl file into folder
-      file.copy(from = here("re.tpl"),
-                to = resampled_results_folders[[stock]][[sub]][[year]],
-                overwrite = TRUE)
-      
-    }
-  }
-}
-
-
-
-# Run resampled data sets in the ADMB model, saving results into appropriate folders
-for (stock in 1:N_stock) {
-  for (sub in 1:N_sub) {
-    for (year in 1:length(survey_years[[stock]][[sub]])) {
-      # Creating partial (rather than full) file path, as required by the below ADMB functions
-      resample_folder <- sub(paste0(here(), "/"), "", resampled_results_folders[[stock]][[sub]][[year]])
-      # Compile ADMB model
-      compile_admb(fn = paste0(resample_folder, "/re"), re = TRUE, verbose=TRUE)
-      # Run ADMB model
-      run_admb(fn = paste0(resample_folder, "/re"), verbose = FALSE)
-      # Move output files that end up in the main project folder into appropriate results folder
-      for(file in 1:length(result_files)) {
-        file.rename(here(result_files[file]), paste0(resampled_results_folders[[stock]][[sub]][[year]], "/", result_files[file]))
-      }
-    }
-  }
-}
 
 
