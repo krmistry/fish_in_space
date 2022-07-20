@@ -1,3 +1,11 @@
+########## Importing data and creating VAST settings
+
+library(here)
+# Setting up main folder path and importing user inputs script
+main_folder <- sub("Delta-GLMM", "", here())
+source(paste0(main_folder, "00_user_inputs.R"))
+
+
 # Set up vectors of results & result plots folder names for runs with survey years
 initial_results_folders <- results_folder_fun(here("results"), 
                                               stock_folder_names)
@@ -87,6 +95,20 @@ CPUE_data <- read.csv(here("data/CPUE.csv"))
 
 #### Spatial & Spatio-temporal VAST settings
 
+# Setting RhoConfig betas: (2,2) for random walk process for both encounter probability 
+# & positive catch equations for Pacific Ocean Perch and(2,1) for random for encounter 
+# probability and fixed effect for positive catch for Northern Rockfish
+beta_setting <- list(c(2, 2), c(2, 1)) 
+names(beta_setting) <- stock_folder_names
+
+# Setting RhoConfig epsilons: 2,2 for random walk process for spatiotemporal random effect
+# for both encounter probability & positive catch equations
+epsilon_setting <- c(2, 2)
+
+# Set up gamma for positive catch, delta model for encounter
+dist_setting <- "Gamma"
+
+
 # Creating list of temporal setting and the distribution settings for VAST input for each species
 # with custom function (see 01_functions.R)
 temporal_dist_settings <- list()
@@ -98,7 +120,7 @@ for(stock in stock_folder_names) {
 }
 
 
-## Spatial & spatiotemp random effects settings - ***I think these stay the same...
+## Spatial & spatiotemp random effects settings 
 FieldConfig <- matrix( c("IID","IID",
                          "IID","IID",
                          "IID","IID"), #"IID" = independent identical distribution
