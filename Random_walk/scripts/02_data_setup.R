@@ -1,28 +1,12 @@
-# Importing data
+########### Importing data & formatting for model runs with all data
+
+library(here)
+# Importing species & subregion information from user inputs script in main folder
+main_folder <- sub("Random_walk", "", here())
+source(paste0(main_folder, "00_user_inputs.R"))
+
+# Importing survey data
 GOA_indices_data <- read.csv(here("data/BIOMASS_AREA_DATA_TABLE.csv"))
-# species 
-stock_names <- c("Pacific Ocean Perch" = "Sebastes alutus", 
-                 "Northern Rockfish" = "Sebastes polyspinis") 
-my_stock_ids <- c("30060", 
-                  "30420") 
-names(my_stock_ids) <- stock_names
-stock_folder_names <- sub(" ", "_", stock_names)
-
-# Species-specific start years & most recent survey year
-start_years <- c(1990, 
-                 1984) 
-names(start_years) <- stock_names
-end_years <- c(2019,
-               2019)
-names(end_years) <- stock_names
-
-
-# Subregion names
-subregion <- c("WESTERN", "CENTRAL", "EASTERN")
-
-# Number of stocks and number of subregions (for looping) 
-N_sub <- length(subregion)
-N_stock <- length(stock_names)
 
 # results folder names (formatted as a matrix, species in rows, subregion in columns)
 results_folders <- matrix(NA, nrow = 2, ncol = 3, 
